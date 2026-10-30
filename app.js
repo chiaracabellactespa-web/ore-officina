@@ -284,7 +284,7 @@ function reportByPerson(people, segs) {
     const p = people[id], name = (W(id) || {}).name || '(operaio eliminato)', days = Object.keys(p.byDay).length;
     const rows = Object.entries(p.jobs).sort((a, b) => b[1].ms - a[1].ms);
     return `<h3 class="sub">${esc(name)}<span class="mut">${r.mode === 'day' ? `${hm(p.first)} – ${p.running ? 'in corso' : hm(p.last)} · ` : `${days} giorni · `}pause ${hhmm(p.brk)}</span></h3>
-    <div class="wrapx"><table><tr><th>Lavoro</th><th>Ricambi</th><th>Note</th><th class="n">Ore</th></tr>
+    <div class="wrapx"><table class="rt"><tr><th>Lavoro</th><th>Ricambi</th><th>Note</th><th class="n">Ore</th></tr>
     ${rows.map(([jid, x]) => `<tr><td>${jobHead(J(jid))}${x.rescues.length ? `<div><span class="tag r">Soccorso</span>${esc(x.rescues.join(' · '))}</div>` : ''}</td><td>${nl(x.parts.join('\n'))}</td><td>${nl(x.notes.join('\n'))}</td><td class="n">${hhmm(x.ms)}</td></tr>`).join('') || '<tr><td colspan="4" class="mut">Solo pause registrate.</td></tr>'}
     <tr class="sum"><td colspan="3">Totale lavorato</td><td class="n">${hhmm(p.work)}</td></tr></table></div>
     ${r.mode === 'month' ? `<details><summary>Ore per giorno</summary><div class="wrapx"><table>${Object.entries(p.byDay).sort().map(([d, ms]) => `<tr><td>${ddmm(d)}</td><td class="n">${hhmm(ms)}</td></tr>`).join('')}</table></div></details>` : fixPanel(id, r.date, segs.filter(s => s.wid === id))}`;
