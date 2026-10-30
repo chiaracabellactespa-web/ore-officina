@@ -1,5 +1,5 @@
 // Service worker: tiene in cache i file dell'app. I dati (Supabase) non vengono mai messi in cache.
-const CACHE = 'ore-officina-v2';
+const CACHE = 'ore-officina-v3';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'manifest.webmanifest',
   'icons/logo.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 

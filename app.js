@@ -39,9 +39,11 @@ const jobText = j => j ? [j.code, j.plate, j.desc].filter(Boolean).join(' · ') 
 async function rpc(fn, args) {
   let r;
   try {
-    r = await fetch(CFG.SUPABASE_URL.replace(/\/$/, '') + '/rest/v1/rpc/' + fn, {
+    // usa solo l'indirizzo base (https://xxxx.supabase.co), anche se in config.js c'e' altro dopo
+    const key = String(CFG.SUPABASE_ANON_KEY).trim();
+    r = await fetch(new URL(String(CFG.SUPABASE_URL).trim()).origin + '/rest/v1/rpc/' + fn, {
       method: 'POST',
-      headers: { apikey: CFG.SUPABASE_ANON_KEY, Authorization: 'Bearer ' + CFG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+      headers: { apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
       body: JSON.stringify(args || {})
     });
   } catch (e) { const err = new Error('Nessuna connessione. Riprova tra poco.'); err.net = true; throw err; }
