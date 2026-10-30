@@ -43,7 +43,8 @@ async function rpc(fn, args) {
     const key = String(CFG.SUPABASE_ANON_KEY).trim();
     r = await fetch(new URL(String(CFG.SUPABASE_URL).trim()).origin + '/rest/v1/rpc/' + fn, {
       method: 'POST',
-      headers: { apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+      // le chiavi nuove (sb_publishable_...) vanno solo in "apikey"; quelle vecchie (eyJ...) anche in Authorization
+      headers: key.startsWith('sb_') ? { apikey: key, 'Content-Type': 'application/json' } : { apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
       body: JSON.stringify(args || {})
     });
   } catch (e) { const err = new Error('Nessuna connessione. Riprova tra poco.'); err.net = true; throw err; }
