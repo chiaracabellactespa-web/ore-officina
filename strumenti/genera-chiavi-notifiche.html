@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chiavi per le notifiche – Ore Officina</title>
+<style>
+  body{font:16px/1.5 system-ui,sans-serif;max-width:720px;margin:32px auto;padding:0 16px;color:#1c2a33}
+  h1{font-size:24px} button{font:600 17px system-ui;background:#2c6f98;color:#fff;border:0;border-radius:8px;padding:12px 20px;cursor:pointer}
+  textarea{width:100%;font:14px ui-monospace,monospace;padding:8px;box-sizing:border-box} label{display:block;font-weight:600;margin:16px 0 4px}
+  .warn{background:#fff6dd;border:1.5px solid #f2b01e;border-radius:8px;padding:10px 12px}
+</style>
+</head>
+<body>
+<h1>Chiavi per le notifiche</h1>
+<p>Questa pagina crea una coppia di chiavi (VAPID) per le notifiche di Ore Officina. Funziona nel tuo browser: le chiavi non vengono inviate a nessuno.</p>
+<p><button id="go" type="button">Genera chiavi</button></p>
+<div id="out" hidden>
+  <label for="pub">Chiave pubblica: va in <code>config.js</code> (VAPID_PUBLIC_KEY) e nel segreto VAPID_PUBLIC_KEY di Supabase</label>
+  <textarea id="pub" rows="3" readonly></textarea>
+  <label for="prv">Chiave privata: va SOLO nel segreto VAPID_PRIVATE_KEY di Supabase</label>
+  <textarea id="prv" rows="2" readonly></textarea>
+  <p class="warn"><b>La chiave privata è segreta.</b> Non metterla in <code>config.js</code>, non caricarla su GitHub e non mandarla per messaggio. Se la perdi, generane un'altra e rifai l'attivazione delle notifiche sui telefoni.</p>
+</div>
+<script>
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const dec = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '=')), c => c.charCodeAt(0));
+document.getElementById('go').addEventListener('click', async () => {
+  const k = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const j = await crypto.subtle.exportKey('jwk', k.privateKey);
+  const pub = new Uint8Array(65); pub[0] = 4; pub.set(dec(j.x), 1); pub.set(dec(j.y), 33);
+  document.getElementById('pub').value = b64u(pub);
+  document.getElementById('prv').value = j.d;
+  document.getElementById('out').hidden = false;
+});
+</script>
+</body>
+</html>

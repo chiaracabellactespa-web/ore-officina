@@ -1,5 +1,5 @@
 // Service worker: tiene in cache i file dell'app. I dati (Supabase) non vengono mai messi in cache.
-const CACHE = 'ore-officina-v6';
+const CACHE = 'ore-officina-v7';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'scheda.js', 'config.js', 'manifest.webmanifest',
   'icons/logo.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
@@ -26,4 +26,20 @@ self.addEventListener('fetch', e => {
   // File dell'app: prima la rete (cosi' gli aggiornamenti arrivano subito), poi la copia salvata
   e.respondWith(fetch(req).then(r => { const copy = r.clone(); caches.open(CACHE).then(c => c.put(req, copy)); return r; })
     .catch(() => caches.match(req).then(m => m || caches.match('index.html'))));
+});
+
+// Notifiche push (facoltative): avviso quando un timer viene fermato a fine orario
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (x) { /* testo semplice */ }
+  e.waitUntil(self.registration.showNotification(d.title || 'Ore Officina', {
+    body: d.body || '', icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: d.tag || 'ore-officina', renotify: true, data: { url: './' }
+  }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    for (const c of list) { if ('focus' in c) return c.focus(); }
+    return self.clients.openWindow('./');
+  }));
 });

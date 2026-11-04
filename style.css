@@ -134,3 +134,13 @@ label.btn{display:inline-flex;align-items:center;cursor:pointer}
 .scanner video{width:100%;max-width:560px;max-height:60vh;object-fit:cover;border-radius:12px;background:#111}
 .scanner .frame{position:absolute;left:50%;top:50%;width:min(80vw,440px);height:120px;transform:translate(-50%,-70%);border:3px solid #f2b01e;border-radius:12px;pointer-events:none}
 .scanner .hint{color:#fff;margin:0;font-size:17px}.scanner .btn{width:min(80vw,320px)}
+
+/* ---------- orario, straordinario, avvisi ---------- */
+.tag.ot{background:var(--amber);color:#1c2a33}
+.btn.amber{background:var(--amber);color:#1c2a33}
+.card.alert{border:2px solid var(--amber);background:var(--soft)}
+.otl{font:600 12px var(--f-body);color:var(--mut)}
+.chk.sm{font-size:14px}.chk.sm input{width:20px;height:20px}
+.schedrow{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)}
+.schedrow .chk{flex:1 1 150px}.schedrow input[type=time]{width:136px;flex:none}
+.schedrow input:disabled{opacity:.45}
