@@ -333,7 +333,7 @@ function ownerReport() {
   <div class="seggroup" style="flex:0 0 auto"><button data-act="rby" data-v="person" aria-pressed="${r.by === 'person'}">Per persona</button><button data-act="rby" data-v="job" aria-pressed="${r.by === 'job'}">Per lavoro</button></div>
   <div>${r.mode === 'day' ? `<input type="date" id="rd" data-in="rd" value="${r.date}" aria-label="Data">` : `<input type="month" id="rm" data-in="rm" value="${r.month}" aria-label="Mese">`}</div>
   <button class="btn sec" data-act="csv" style="flex:0 0 auto">Esporta CSV</button><button class="btn sec" data-act="print" style="flex:0 0 auto">Stampa</button></div></div>
-  <div class="card"><div class="row" style="align-items:center"><h2 style="flex:3 1 200px;text-transform:capitalize;margin:0">${label}</h2><div class="total" style="flex:0 0 auto">${hhmm(total)} <small>ore lavorate${totOt ? ' · di cui straordinario ' + hhmm(totOt) : ''} · pause ${hhmm(brk)}</small></div></div>
+  <div class="card"><div class="row" style="align-items:center"><h2 style="flex:3 1 200px;text-transform:capitalize;margin:0">${label}</h2><div class="total" style="flex:1 1 auto">${hhmm(total)} <small>ore lavorate${totOt ? ' · di cui straordinario ' + hhmm(totOt) : ''} · pause ${hhmm(brk)}</small></div></div>
   ${resc.length ? `<p><span class="tag r">Soccorso stradale</span>${resc.map(s => `${esc((W(s.wid) || {}).name || '?')} su ${esc(jobText(J(s.jobId)))} (${esc(s.rescues.join(', '))}${r.mode === 'month' ? ', ' + ddmm(dstr(s.start)) : ''})`).join(' · ')}</p>` : ''}
   ${segs.length ? (r.by === 'person' ? reportByPerson(people, segs) : reportByJob(segs)) : '<div class="empty" style="margin-top:12px">Nessun tempo registrato in questo periodo.</div>'}</div>`;
 }

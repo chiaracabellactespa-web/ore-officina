@@ -148,3 +148,14 @@ label.btn{display:inline-flex;align-items:center;cursor:pointer}
 .schedday .slot i{font-style:normal}
 .schedday .slot input[type=time]{width:100%;min-width:0;box-sizing:border-box}
 .schedday input:disabled{opacity:.45}
+
+/* telefono: tabelle dei report e riga totale dentro lo schermo; nomi file lunghi a capo */
+.fl>span:first-child{min-width:0;overflow-wrap:anywhere}
+@media (max-width:560px){
+  table.rt{min-width:0;table-layout:auto}
+  table.rt th,table.rt td{padding:7px 4px;font-size:14px;overflow-wrap:anywhere}
+  table.rt th{font-size:12px;overflow-wrap:normal;padding:7px 2px}
+  table.rt th:nth-child(n){width:auto}
+  table.rt th:nth-child(4),table.rt td:nth-child(4){width:3.4em;text-align:right;white-space:nowrap}
+  .total small{display:block}
+}
