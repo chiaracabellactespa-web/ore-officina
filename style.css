@@ -141,6 +141,10 @@ label.btn{display:inline-flex;align-items:center;cursor:pointer}
 .card.alert{border:2px solid var(--amber);background:var(--soft)}
 .otl{font:600 12px var(--f-body);color:var(--mut)}
 .chk.sm{font-size:14px}.chk.sm input{width:20px;height:20px}
-.schedrow{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)}
-.schedrow .chk{flex:1 1 150px}.schedrow input[type=time]{width:136px;flex:none}
-.schedrow input:disabled{opacity:.45}
+.schedday{padding:10px 0;border-bottom:1px solid var(--line)}
+.schedday .chk{margin-bottom:6px}
+.schedday .slot{display:grid;grid-template-columns:5.6em minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:8px;margin-top:6px}
+.schedday .slot span{font-size:14px;color:var(--mut,#5d6568)}
+.schedday .slot i{font-style:normal}
+.schedday .slot input[type=time]{width:100%;min-width:0;box-sizing:border-box}
+.schedday input:disabled{opacity:.45}

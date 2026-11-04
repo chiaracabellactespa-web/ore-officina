@@ -56,8 +56,12 @@ function romeNow(ms) { const p = {}; ROME.formatToParts(new Date(ms)).forEach(x 
 const dOpen = (k, def) => (S.open[k] ?? def) ? ' open' : '';   // i pannelli <details> restano aperti quando la pagina si aggiorna
 const toMin = t => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
 const schedOn = () => !!(S.sched && S.sched.enabled);
-const dayHours = ms => { const d = schedOn() && S.sched.days && S.sched.days[romeNow(ms).dow]; return Array.isArray(d) ? d : null; };
-function inHours(ms) { if (!schedOn()) return true; const d = dayHours(ms); if (!d) return false; const m = romeNow(ms).min; return m >= toMin(d[0]) && m < toMin(d[1]); }
+const slotsOf = d => !Array.isArray(d) || !d.length ? [] : (typeof d[0] === 'string' ? [d] : d);   // accetta anche il vecchio formato ["08:00","18:00"]
+const dayHours = ms => { const s = schedOn() && S.sched.days ? slotsOf(S.sched.days[romeNow(ms).dow]) : []; return s.length ? s : null; };   // fasce del giorno: [[inizio,fine],...]
+const slotTxt = s => s.map(x => x[0] + '–' + x[1]).join(' e ');
+function inHours(ms) { if (!schedOn()) return true; const d = dayHours(ms); if (!d) return false; const m = romeNow(ms).min; return d.some(x => m >= toMin(x[0]) && m < toMin(x[1])); }
+function slotEnd(ms) { const d = dayHours(ms); if (!d) return ''; const m = romeNow(ms).min, x = d.find(x => m >= toMin(x[0]) && m < toMin(x[1])); return x ? x[1] : ''; }   // fine della fascia in cui si trova ms
+function nextSlotStart(ms) { const d = dayHours(ms); if (!d) return ''; const m = romeNow(ms).min, x = d.find(x => toMin(x[0]) > m); return x ? x[0] : ''; }
 const urlB64ToBytes = v => { const raw = atob(String(v).replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(String(v).length / 4) * 4, '=')); return Uint8Array.from(raw, c => c.charCodeAt(0)); };
 const pushOk = () => !!(CFG.VAPID_PUBLIC_KEY && S.pushReady && schedOn() && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window);
 function refreshPush() {
@@ -222,7 +226,8 @@ function alertsHtml() {
   const run = S.segs.some(s => !s.end);
   return S.alerts.map(a => {
     const j = J(a.job_id), t = Date.parse(a.stopped_at), canOt = !run && j && j.open && !inHours(nowMs());
-    return `<section class="card alert" role="alert"><h2>Timer fermato a fine orario</h2><p>Il timer su ${jobHead(j)} è stato fermato alle <b>${hm(t)}</b>, alla fine dell'orario dell'officina.${canOt ? ' Se stai ancora lavorando, avvia lo straordinario.' : ''}</p>
+    const nx = dstr(t) === dstr(nowMs()) ? nextSlotStart(t) : '', brk = nx && toMin(nx) > romeNow(nowMs()).min;   // fermato per la pausa di mezzogiorno
+    return `<section class="card alert" role="alert"><h2>${brk ? 'Timer fermato per la pausa' : 'Timer fermato a fine orario'}</h2><p>Il timer su ${jobHead(j)} è stato fermato alle <b>${hm(t)}</b>, ${brk ? `alla fine della fascia della mattina. Alle ${nx} potrai riavviarlo normalmente.` : "alla fine dell'orario dell'officina."}${canOt ? ' Se stai ancora lavorando, avvia lo straordinario.' : ''}</p>
     <div class="btns ${canOt ? '' : 'one'}">${canOt ? `<button class="btn big amber" data-act="startot" data-id="${a.id}" data-job="${a.job_id}">Avvia straordinario</button>` : ''}<button class="btn big sec" data-act="ackalert" data-id="${a.id}">${canOt ? 'Ho finito' : 'Ok'}</button></div></section>`;
   }).join('');
 }
@@ -234,10 +239,10 @@ function workerTimer() {
     main = `<section class="card run"><h2>Timer rimasto acceso</h2><p>Il timer ${run.kind === 'break' ? 'della pausa' : 'di'} ${run.kind === 'break' ? '' : jobHead(J(run.jobId))} è partito il ${ddmm(dstr(run.start))} alle ${hm(run.start)} e non è stato fermato.</p>
     <div class="row"><div><label for="oldt">Ora a cui hai finito</label><input id="oldt" type="time" value="17:00"></div><button class="btn" data-act="closeold">Chiudi timer</button></div></section>`;
   } else if (run && run.kind === 'work') {
-    const rd = dayHours(run.start);
+    const rd = slotEnd(run.start);
     main = `<section class="card run"><div class="note">In lavorazione dalle ${hm(run.start)}${run.ot ? ' <span class="tag ot">Straordinario</span>' : ''}</div><div class="jobline">${jobHead(J(run.jobId))}</div>
     <div class="clock" data-tick="${run.start}">${hms(now - run.start)}</div>
-    ${!run.ot && rd ? `<p class="note" style="margin:0 0 10px">Il timer si ferma da solo alle ${rd[1]}. Per continuare dopo, avvia lo straordinario.</p>` : ''}
+    ${!run.ot && rd ? `<p class="note" style="margin:0 0 10px">Il timer si ferma da solo alle ${rd}. Per continuare dopo, avvia lo straordinario.</p>` : ''}
     <div class="row"><div style="flex:2 1 200px"><label for="rp">Ricambi (uno per riga)</label><textarea id="rp" data-in="segf" data-f="parts" data-s="${run.id}" placeholder="es. Filtro olio ×1">${esc(run.parts)}</textarea></div>
     <div style="flex:2 1 200px"><label for="rn">Note</label><textarea id="rn" data-in="segf" data-f="note" data-s="${run.id}">${esc(run.note)}</textarea></div></div>
     ${rescueBlock(run)}
@@ -251,7 +256,7 @@ function workerTimer() {
   } else {
     const sj = J(S.sel);
     main = `<section class="card"><h2>Scegli il lavoro</h2>
-    ${out ? `<div class="warn" role="status">${dh ? `Siamo fuori dall'orario dell'officina (${dh[0]}–${dh[1]}).` : "Oggi l'officina è chiusa."} Il tempo che avvii ora sarà registrato come <b>straordinario</b>.</div>` : ''}
+    ${out ? `<div class="warn" role="status">${dh ? `Siamo fuori dall'orario dell'officina (${slotTxt(dh)}).` : "Oggi l'officina è chiusa."} Il tempo che avvii ora sarà registrato come <b>straordinario</b>.</div>` : ''}
     <label for="jq">Codice, targa o codice a barre</label><div class="bcrow"><input id="jq" data-live="jq" value="${esc(S.jq)}" placeholder="Digita o scansiona, poi Invio" autocomplete="off"><button class="btn sec" data-act="scanw">Scansiona</button></div>
     <div class="pick" id="joblist">${jobListHtml()}</div>${jobInfo(sj)}
     <div class="btns ${out ? 'one' : ''}" style="margin-top:14px"><button class="btn big ${out ? 'amber' : ''}" data-act="start" ${sj ? '' : 'disabled'}>${sj ? (out ? 'Avvia straordinario' : 'Avvia') : 'Scegli un lavoro'}</button>${out ? '' : '<button class="btn big steel" data-act="startbreak">Pausa</button>'}</div></section>`;
@@ -407,7 +412,11 @@ function jobsAdminList() {
 }
 function schedDraft() {
   const c = S.sched && S.sched.days ? S.sched : null, days = {};
-  for (let i = 1; i <= 7; i++) { const x = c && c.days[i]; days[i] = Array.isArray(x) ? { on: true, from: x[0], to: x[1] } : { on: !c && i <= 5, from: '08:00', to: '18:00' }; }
+  for (let i = 1; i <= 7; i++) {
+    const x = c ? slotsOf(c.days[i]) : [];
+    days[i] = x.length ? { on: true, af: x[0][0], at: x[0][1], bf: x[1] ? x[1][0] : '', bt: x[1] ? x[1][1] : '' }
+                       : { on: !c && i <= 5, af: '08:00', at: '12:00', bf: '14:00', bt: '18:00' };
+  }
   return { en: !!(c && c.enabled), days };
 }
 function schedCard() {
@@ -415,8 +424,11 @@ function schedCard() {
   return `<div class="card"><h2>Orario dell'officina</h2>
   <label class="chk"><input type="checkbox" data-live="sch" data-f="en" ${d.en ? 'checked' : ''}> Ferma i timer a fine orario e registra lo straordinario</label>
   <p class="note">Con l'opzione attiva, alla fine dell'orario i timer si fermano da soli all'ora esatta e l'operaio riceve un avviso. Per continuare deve avviare lo straordinario, che nei report compare a parte. Nei giorni senza spunta l'officina è chiusa e tutto il lavoro è straordinario.</p>
-  ${DAYNAMES.map((n, i) => { const k = i + 1, x = d.days[k]; return `<div class="schedrow"><label class="chk"><input type="checkbox" data-live="sch" data-f="on${k}" ${x.on ? 'checked' : ''}> ${n}</label>
-  <input type="time" aria-label="${n}, inizio" data-live="sch" data-f="from${k}" value="${x.from}" ${x.on ? '' : 'disabled'}><span aria-hidden="true">–</span><input type="time" aria-label="${n}, fine" data-live="sch" data-f="to${k}" value="${x.to}" ${x.on ? '' : 'disabled'}></div>`; }).join('')}
+  ${DAYNAMES.map((n, i) => { const k = i + 1, x = d.days[k], dis = x.on ? '' : 'disabled', t = (f, lab, v) => `<input type="time" aria-label="${n}, ${lab}" data-live="sch" data-f="${f}${k}" value="${v}" ${dis}>`;
+    return `<div class="schedday"><label class="chk"><input type="checkbox" data-live="sch" data-f="on${k}" ${x.on ? 'checked' : ''}> ${n}${x.on ? '' : ' <span class="note" style="margin:0">chiuso</span>'}</label>
+    <div class="slot"><span>Mattina</span>${t('af', 'mattina, inizio', x.af)}<i aria-hidden="true">–</i>${t('at', 'mattina, fine', x.at)}</div>
+    <div class="slot"><span>Pomeriggio</span>${t('bf', 'pomeriggio, inizio', x.bf)}<i aria-hidden="true">–</i>${t('bt', 'pomeriggio, fine', x.bt)}</div></div>`; }).join('')}
+  <p class="note">Per un orario continuato (senza pausa pranzo) lascia vuoto il pomeriggio: cancella i due orari.</p>
   <div class="btns one" style="margin-top:12px"><button class="btn" data-act="savesched">Salva orario</button></div></div>`;
 }
 function ownerPeople() {
@@ -567,9 +579,15 @@ const act = {
   savesched() {
     const d = S.sch; if (!d) return; const days = {};
     for (let i = 1; i <= 7; i++) {
-      const x = d.days[i]; if (!x.on) continue;
-      if (!x.from || !x.to || x.from >= x.to) { toast(DAYNAMES[i - 1] + ": l'ora di fine deve seguire quella di inizio"); return; }
-      days[i] = [x.from, x.to];
+      const x = d.days[i]; if (!x.on) continue; const nm = DAYNAMES[i - 1], sl = [];
+      if (!x.af || !x.at || x.af >= x.at) { toast(nm + ": l'ora di fine della mattina deve seguire quella di inizio"); return; }
+      sl.push([x.af, x.at]);
+      if (x.bf || x.bt) {
+        if (!x.bf || !x.bt || x.bf >= x.bt) { toast(nm + ": l'ora di fine del pomeriggio deve seguire quella di inizio"); return; }
+        if (x.bf < x.at) { toast(nm + ': il pomeriggio deve iniziare dopo la fine della mattina'); return; }
+        sl.push([x.bf, x.bt]);
+      }
+      days[i] = sl;
     }
     act2('o_set_schedule', { p_cfg: JSON.stringify({ enabled: d.en, days }) }).then(ok => { if (ok) { S.sch = null; toast('Orario salvato'); render(); } });
   },
@@ -644,7 +662,7 @@ const live = {
     const d = S.sch ??= schedDraft(), f = t.dataset.f; let m;
     if (f === 'en') d.en = t.checked;
     else if ((m = /^on(\d)$/.exec(f))) { d.days[m[1]].on = t.checked; render(); }
-    else if ((m = /^(from|to)(\d)$/.exec(f))) d.days[m[2]][m[1]] = t.value;
+    else if ((m = /^(af|at|bf|bt)(\d)$/.exec(f))) d.days[m[2]][m[1]] = t.value;
   },
   dr(t) { S.draft[t.dataset.f] = t.value; },
   jq(t) { S.jq = t.value; const l = $('#joblist'); if (l) l.innerHTML = jobListHtml(); },
