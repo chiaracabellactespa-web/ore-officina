@@ -1,6 +1,6 @@
 // Service worker: tiene in cache i file dell'app. I dati (Supabase) non vengono mai messi in cache.
-const CACHE = 'ore-officina-v5';
-const FILES = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'manifest.webmanifest',
+const CACHE = 'ore-officina-v6';
+const FILES = ['./', 'index.html', 'style.css', 'app.js', 'scheda.js', 'config.js', 'manifest.webmanifest',
   'icons/logo.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

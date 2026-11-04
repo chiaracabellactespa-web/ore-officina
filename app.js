@@ -24,13 +24,27 @@ const S = {
   jobs: [], vehicles: [], busy: [], segs: [],      // operaio
   o: { workers: [], segs: [] },                      // titolare
   sel: '', jq: '', jf: '', confirm: '', rescueOpen: {},
+  draft: null, openJob: '', files: {},
   rep: { mode: 'day', date: dstr(Date.now()), month: dstr(Date.now()).slice(0, 7), by: 'person' }
 };
 const nowMs = () => Date.now() + S.off;
 const J = id => S.jobs.find(j => j.id === id);
 const W = id => S.o.workers.find(w => w.id === id);
 const byName = (a, b) => (a.name || '').localeCompare(b.name || '', 'it');
-const normJob = j => ({ id: j.id, type: j.kind, code: j.code || '', plate: j.plate || '', barcode: j.barcode || '', desc: j.description || '', open: j.is_open, created: Date.parse(j.created_at) });
+const normJob = j => ({ id: j.id, type: j.kind, code: j.code || '', plate: j.plate || '', barcode: j.barcode || '', desc: j.description || '', open: j.is_open, created: Date.parse(j.created_at),
+  sheet: j.sheet_no || '', customer: j.customer || '', model: j.model || '', vin: j.vin || '', km: j.km ?? '', due: j.due_date || '', request: j.request || '', nfiles: j.nfiles || 0 });
+const emptyDraft = () => ({ id: '', kind: 'veh', code: '', plate: '', barcode: '', desc: '', sheet: '', customer: '', model: '', vin: '', km: '', due: '', request: '', file: null, note: '' });
+S.draft = emptyDraft();
+const Sc = () => window.OfficinaScheda;
+const itDate = d => d ? d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4) : '';
+function jobInfo(j, owner) {                     // dati della scheda sotto al lavoro (il cliente solo al titolare)
+  if (!j) return '';
+  const rows = [['Veicolo', j.model && j.model !== j.desc ? j.model : ''], ['Telaio', j.vin], ['Km', j.km !== '' ? Number(j.km).toLocaleString('it-IT') : ''], ['Consegna prevista', itDate(j.due)],
+    ...(owner ? [['Cliente', j.customer], ['Scheda n.', j.sheet]] : [])].filter(r => r[1]);
+  if (!rows.length && !j.request) return '';
+  return `<div class="jinfo">${rows.map(([k, v]) => `<div><span>${k}</span><b>${esc(v)}</b></div>`).join('')}${j.request ? `<p><span>Lavoro richiesto</span>${nl(j.request)}</p>` : ''}</div>`;
+}
+const toB64 = blob => new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = () => ko(new Error('File non leggibile')); r.readAsDataURL(blob); });
 const normSeg = s => ({ id: s.id, wid: s.worker_id || S.wid, jobId: s.job_id, kind: s.kind, start: Date.parse(s.started_at), end: s.ended_at ? Date.parse(s.ended_at) : 0, parts: s.parts || '', note: s.note || '', rescues: s.rescues || [] });
 const jobHead = j => j ? `${j.code ? `<span class="tag ${j.type === 'gen' ? 'g' : ''}">${esc(j.code)}</span>` : ''}${j.plate ? `<span class="plate">${esc(j.plate)}</span>` : ''}<span>${esc(j.desc)}</span>` : '<span class="mut">(lavoro eliminato)</span>';
 const jobText = j => j ? [j.code, j.plate, j.desc].filter(Boolean).join(' · ') : '(lavoro eliminato)';
@@ -111,7 +125,7 @@ async function submitPin() {
 }
 function logout() {
   if (S.token) rpc('logout', { p_token: S.token }).catch(() => {});
-  Object.assign(S, { token: '', role: null, wid: '', name: '', jobs: [], segs: [], busy: [], sel: '', confirm: '', rescueOpen: {} });
+  Object.assign(S, { token: '', role: null, wid: '', name: '', jobs: [], segs: [], busy: [], sel: '', confirm: '', rescueOpen: {}, draft: emptyDraft(), openJob: '', files: {} });
   S.o = { workers: [], segs: [] };
   S.login = { mode: 'pick', wid: '', pin: '', err: '', busy: false };
   loadWorkers();
@@ -198,6 +212,7 @@ function workerTimer() {
     <div class="row"><div style="flex:2 1 200px"><label for="rp">Ricambi (uno per riga)</label><textarea id="rp" data-in="segf" data-f="parts" data-s="${run.id}" placeholder="es. Filtro olio ×1">${esc(run.parts)}</textarea></div>
     <div style="flex:2 1 200px"><label for="rn">Note</label><textarea id="rn" data-in="segf" data-f="note" data-s="${run.id}">${esc(run.note)}</textarea></div></div>
     ${rescueBlock(run)}
+    ${jobInfo(J(run.jobId)) ? `<details class="jd"><summary>Scheda del lavoro</summary>${jobInfo(J(run.jobId))}</details>` : ''}
     <div class="btns"><button class="btn big steel" data-act="pause">Pausa</button><button class="btn big stop" data-act="stop">Stop</button></div></section>`;
   } else if (run) {
     const j = J(run.jobId);
@@ -207,8 +222,8 @@ function workerTimer() {
   } else {
     const sj = J(S.sel);
     main = `<section class="card"><h2>Scegli il lavoro</h2>
-    <label for="jq">Codice, targa o codice a barre</label><input id="jq" data-live="jq" value="${esc(S.jq)}" placeholder="Digita o scansiona, poi Invio" autocomplete="off">
-    <div class="pick" id="joblist">${jobListHtml()}</div>
+    <label for="jq">Codice, targa o codice a barre</label><div class="bcrow"><input id="jq" data-live="jq" value="${esc(S.jq)}" placeholder="Digita o scansiona, poi Invio" autocomplete="off"><button class="btn sec" data-act="scanw">Scansiona</button></div>
+    <div class="pick" id="joblist">${jobListHtml()}</div>${jobInfo(sj)}
     <div class="btns" style="margin-top:14px"><button class="btn big" data-act="start" ${sj ? '' : 'disabled'}>${sj ? 'Avvia' : 'Scegli un lavoro'}</button><button class="btn big steel" data-act="startbreak">Pausa</button></div></section>`;
   }
   return main + `<div class="sumline"><span>Lavorato oggi <b>${hhmm(t.w)}</b></span><span>Pause <b>${hhmm(t.b)}</b></span></div>`;
@@ -312,22 +327,43 @@ function reportByJob(segs) {
   ${a.rescues.length ? `<p style="margin:8px 0 2px"><span class="tag r">Soccorso stradale</span>${esc(a.rescues.join(' · '))}</p>` : ''}
   ${a.parts.length ? `<p style="margin:8px 0 2px"><b>Ricambi</b><br>${nl(a.parts.join('\n'))}</p>` : ''}${a.notes.length ? `<p style="margin:8px 0 0"><b>Note</b><br>${nl(a.notes.join('\n'))}</p>` : ''}`).join('') || '<div class="empty">Nessun lavoro in questo periodo.</div>';
 }
+function draftForm() {
+  const d = S.draft, fld = (k, label, ph, attrs) => `<div><label for="d_${k}">${label}</label><input id="d_${k}" data-live="dr" data-f="${k}" value="${esc(d[k])}" placeholder="${ph}" autocomplete="off" ${attrs || ''}></div>`;
+  const extra = !!(d.sheet || d.customer || d.model || d.vin || d.km || d.due || d.request || d.id);
+  return `<div class="row"><div style="flex:0 1 200px"><label for="d_kind">Tipo</label><select id="d_kind" data-live="dr" data-f="kind"><option value="veh" ${d.kind === 'veh' ? 'selected' : ''}>Veicolo</option><option value="gen" ${d.kind === 'gen' ? 'selected' : ''}>Generico (pulizia, varie…)</option></select></div>
+  ${fld('code', 'Codice lavoro', 'es. 2776/2026')}${fld('plate', 'Targa', 'AB123CD', 'style="text-transform:uppercase"')}</div>
+  <div class="row" style="margin-top:10px"><div style="flex:2 1 220px"><label for="d_barcode">Codice a barre</label><div class="bcrow"><input id="d_barcode" data-live="dr" data-f="barcode" value="${esc(d.barcode)}" placeholder="Scansiona o digita" autocomplete="off"><button class="btn sec" data-act="scanbc">Scansiona</button></div></div>
+  <div style="flex:3 1 260px"><label for="d_desc">Descrizione</label><input id="d_desc" data-live="dr" data-f="desc" value="${esc(d.desc)}" placeholder="es. Tagliando + freni anteriori" autocomplete="off"></div></div>
+  <details class="more" ${extra ? 'open' : ''}><summary>Dati della scheda (modello, cliente, km, lavoro richiesto)</summary>
+  <div class="row" style="margin-top:10px">${fld('model', 'Veicolo', 'es. FIAT DUCATO 2.2 MULTIJET')}${fld('vin', 'Telaio', '', 'style="text-transform:uppercase"')}${fld('km', 'Km', '', 'inputmode="numeric"')}</div>
+  <div class="row" style="margin-top:10px">${fld('customer', 'Cliente (solo titolare)', '')}${fld('sheet', 'Scheda n.', '')}<div><label for="d_due">Consegna prevista</label><input id="d_due" type="date" data-live="dr" data-f="due" value="${esc(d.due)}"></div></div>
+  <div style="margin-top:10px"><label for="d_request">Lavoro richiesto</label><textarea id="d_request" rows="3" data-live="dr" data-f="request">${esc(d.request)}</textarea></div></details>
+  ${d.file ? `<p class="note"><span class="tag">${d.file.kind === 'pdf' ? 'PDF' : 'Foto'}</span> ${esc(d.file.name)} verrà archiviato con il lavoro.</p>` : ''}
+  <div class="btns" style="margin-top:12px"><button class="btn" data-act="savejob">${d.id ? 'Salva modifiche' : 'Aggiungi lavoro'}</button>${d.id || d.file || d.code || d.plate || d.barcode ? '<button class="btn sec" data-act="canceldraft">Annulla</button>' : ''}</div>`;
+}
 function ownerJobs() {
-  return `<div class="card"><h2>Nuovo lavoro</h2>
-  <div class="row"><div style="flex:0 1 200px"><label for="jt">Tipo</label><select id="jt"><option value="veh">Veicolo</option><option value="gen">Generico (pulizia, varie…)</option></select></div>
-  <div><label for="jc">Codice lavoro</label><input id="jc" placeholder="es. L-2026-118"></div>
-  <div><label for="jp">Targa</label><input id="jp" placeholder="AB123CD" style="text-transform:uppercase"></div>
-  <div><label for="jbc">Codice a barre</label><input id="jbc" placeholder="Scansiona qui"></div></div>
-  <div class="row" style="margin-top:10px"><div style="flex:3 1 260px"><label for="jd">Descrizione</label><input id="jd" placeholder="es. Tagliando + freni anteriori"></div><button class="btn" data-act="addjob">Aggiungi lavoro</button></div></div>
+  return `<div class="card"><h2>Da scheda di accettazione</h2>
+  <p class="note" style="margin-top:0">Carica il PDF della scheda: l'app legge codice a barre, targa, veicolo, km, consegna e lavoro richiesto e compila il lavoro qui sotto. Puoi anche caricare una foto: viene archiviata e l'app ne legge il codice a barre.</p>
+  <label class="btn" for="impf">Carica PDF o foto</label><input id="impf" type="file" accept="application/pdf,image/*" data-in="imp" hidden>
+  ${S.draft.note ? `<p class="note" role="status">${esc(S.draft.note)}</p>` : ''}</div>
+  <div class="card"><h2>${S.draft.id ? 'Modifica lavoro' : 'Nuovo lavoro'}</h2>${draftForm()}</div>
   <div class="card"><div class="row" style="align-items:center"><h2 style="flex:1 1 auto;margin:0">Elenco lavori</h2><div style="flex:2 1 200px"><input id="jf" type="search" data-live="jf" placeholder="Cerca codice, targa, barcode…" value="${esc(S.jf)}"></div></div>
   <div id="jobsadmin">${jobsAdminList()}</div>
-  <p class="note" style="margin-bottom:0">I lavori chiusi non compaiono agli operai ma restano nei report. Eliminare un lavoro lo toglie anche dai report già fatti: di solito conviene chiuderlo.</p></div>`;
+  <p class="note" style="margin-bottom:0">I lavori chiusi non compaiono agli operai ma restano nei report. Eliminare un lavoro lo toglie anche dai report già fatti e cancella i suoi documenti: di solito conviene chiuderlo. Gli operai vedono i dati del veicolo e il lavoro richiesto, non il cliente né i documenti.</p></div>`;
+}
+function filesHtml(j) {
+  const fs = S.files[j.id];
+  if (!fs) return '<p class="note">Caricamento…</p>';
+  return (fs.length ? fs.map(f => `<div class="fl"><span><span class="tag">${f.kind === 'pdf' ? 'PDF' : 'Foto'}</span> ${esc(f.name)} <span class="mut">${Math.max(1, Math.round(f.size / 1024))} KB</span></span>
+    <span class="acts"><button class="btn sec sm" data-act="openfile" data-f="${f.id}">Apri</button><button class="btn del sm" data-act="delfile" data-f="${f.id}" data-j="${j.id}">${S.confirm === 'file:' + f.id ? 'Conferma' : 'Elimina'}</button></span></div>`).join('') : '<p class="note">Nessun documento archiviato.</p>')
+    + `<label class="btn sec sm" for="af_${j.id}">Aggiungi PDF o foto</label><input id="af_${j.id}" type="file" accept="application/pdf,image/*" data-in="addf" data-j="${j.id}" hidden>`;
 }
 function jobsAdminList() {
   const q = S.jf.toLowerCase();
-  const list = S.jobs.filter(j => !q || (jobText(j) + ' ' + j.barcode).toLowerCase().includes(q));
-  return list.length ? list.map(j => `<div class="item"><div>${jobHead(j)}${j.barcode ? ` <span class="mut">▮ ${esc(j.barcode)}</span>` : ''}${j.open ? '' : ' <span class="tag">chiuso</span>'}</div>
-  <div class="acts"><button class="btn sec sm" data-act="togjob" data-id="${j.id}">${j.open ? 'Chiudi' : 'Riapri'}</button><button class="btn del" data-act="deljob" data-id="${j.id}">${S.confirm === 'job:' + j.id ? 'Conferma' : 'Elimina'}</button></div></div>`).join('') : '<div class="empty" style="margin-top:10px">Nessun lavoro trovato.</div>';
+  const list = S.jobs.filter(j => !q || (jobText(j) + ' ' + j.barcode + ' ' + j.customer + ' ' + j.model + ' ' + j.vin).toLowerCase().includes(q));
+  return list.length ? list.map(j => `<div class="item"><div>${jobHead(j)}${j.barcode ? ` <span class="mut">▮ ${esc(j.barcode)}</span>` : ''}${j.open ? '' : ' <span class="tag">chiuso</span>'}${j.customer ? `<div class="mut" style="font-size:13px">${esc(j.customer)}</div>` : ''}</div>
+  <div class="acts"><button class="btn sec sm" data-act="openjob" data-id="${j.id}" aria-expanded="${S.openJob === j.id}">Scheda${j.nfiles ? ' · ' + j.nfiles : ''}</button><button class="btn sec sm" data-act="editjob" data-id="${j.id}">Modifica</button><button class="btn sec sm" data-act="togjob" data-id="${j.id}">${j.open ? 'Chiudi' : 'Riapri'}</button><button class="btn del" data-act="deljob" data-id="${j.id}">${S.confirm === 'job:' + j.id ? 'Conferma' : 'Elimina'}</button></div></div>
+  ${S.openJob === j.id ? `<div class="jpanel">${jobInfo(j, true) || '<p class="note" style="margin-top:0">Nessun dato di scheda inserito.</p>'}<h3 class="sub" style="margin:12px 0 6px">Documenti</h3>${filesHtml(j)}</div>` : ''}`).join('') : '<div class="empty" style="margin-top:10px">Nessun lavoro trovato.</div>';
 }
 function ownerPeople() {
   return `<div class="card"><h2>Operai</h2>
@@ -391,10 +427,57 @@ const act = {
     act2('o_add_segment', { p_worker: w, p_job: kind === 'work' ? job : null, p_kind: kind, p_start: iso(st), p_end: iso(en) });
   },
   /* lavori */
-  addjob() {
-    const code = $('#jc').value.trim(), plate = $('#jp').value.trim(), barcode = $('#jbc').value.trim();
-    if (!code && !plate && !barcode) { toast('Inserisci almeno codice, targa o codice a barre'); return; }
-    act2('o_add_job', { p_kind: $('#jt').value, p_code: code, p_plate: plate, p_barcode: barcode, p_desc: $('#jd').value.trim() }).then(ok => { if (ok) toast('Lavoro aggiunto'); });
+  scanw() {
+    if (!Sc()) { toast('Aggiorna la pagina e riprova'); return; }
+    Sc().scan((code, err) => {
+      if (err) { toast(err); return; }
+      const j = Sc().matchJob(S.jobs.filter(x => x.open), code);
+      if (j) { S.sel = j.id; S.jq = ''; render(); } else toast('Nessun lavoro aperto con il codice ' + code);
+    });
+  },
+  scanbc() {
+    if (!Sc()) { toast('Aggiorna la pagina e riprova'); return; }
+    Sc().scan((code, err) => { if (err) { toast(err); return; } S.draft.barcode = code; render(); });
+  },
+  canceldraft() { S.draft = emptyDraft(); render(); },
+  editjob(b) {
+    const j = get(S.jobs, b.dataset.id); if (!j) return;
+    S.draft = { ...emptyDraft(), id: j.id, kind: j.type, code: j.code, plate: j.plate, barcode: j.barcode, desc: j.desc, sheet: j.sheet, customer: j.customer, model: j.model, vin: j.vin, km: String(j.km), due: j.due, request: j.request, note: 'Stai modificando un lavoro esistente.' };
+    render(); window.scrollTo(0, 0);
+  },
+  async savejob() {
+    const d = S.draft;
+    if (!d.code.trim() && !d.plate.trim() && !d.barcode.trim()) { toast('Inserisci almeno codice, targa o codice a barre'); return; }
+    let id = d.id;
+    if (!id && d.barcode.trim() && Sc()) { const ex = Sc().matchJob(S.jobs, d.barcode); if (ex) id = ex.id; }   // stesso codice a barre: aggiorna il lavoro esistente
+    const km = parseInt(d.km, 10);
+    try {
+      const jid = await call('o_save_job', { p_job: id || null, p_kind: d.kind, p_code: d.code, p_plate: d.plate, p_barcode: d.barcode, p_desc: d.desc, p_sheet_no: d.sheet, p_customer: d.customer, p_model: d.model, p_vin: d.vin, p_km: Number.isFinite(km) ? km : null, p_due: d.due || null, p_request: d.request });
+      if (d.file) {
+        try { await call('o_add_file', { p_job: jid, p_kind: d.file.kind, p_name: d.file.name, p_mime: d.file.mime, p_b64: d.file.b64 }); }
+        catch (e) { if (e.expired) return; S.draft.id = jid; S.draft.note = 'Lavoro salvato, ma il documento non è stato caricato: ' + e.message + ' Premi Salva modifiche per riprovare.'; await refresh(); render(); return; }
+      }
+      delete S.files[jid]; S.draft = emptyDraft(); toast(id ? 'Lavoro aggiornato' : 'Lavoro aggiunto'); await refresh(); render();
+    } catch (e) { if (!e.expired) toast(e.message); }
+  },
+  openjob(b) {
+    const id = b.dataset.id; S.openJob = S.openJob === id ? '' : id; render();
+    if (S.openJob && !S.files[id]) loadFiles(id);
+  },
+  async openfile(b) {
+    const w = window.open('', '_blank');
+    try {
+      const r = await call('o_get_file', { p_file: b.dataset.f });
+      const bin = atob(r.b64), arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([arr], { type: r.mime }));
+      if (w) w.location.href = url; else { const a = document.createElement('a'); a.href = url; a.download = r.name; document.body.append(a); a.click(); a.remove(); }
+      setTimeout(() => URL.revokeObjectURL(url), 120000);
+    } catch (e) { if (w) w.close(); if (!e.expired) toast(e.message); }
+  },
+  async delfile(b) {
+    const key = 'file:' + b.dataset.f; if (S.confirm !== key) { S.confirm = key; render(); return; }
+    S.confirm = '';
+    try { await call('o_delete_file', { p_file: b.dataset.f }); delete S.files[b.dataset.j]; loadFiles(b.dataset.j); await refresh(); } catch (e) { if (!e.expired) toast(e.message); }
   },
   togjob(b) { const j = get(S.jobs, b.dataset.id); if (j) act2('o_set_job_open', { p_job: j.id, p_open: !j.open }); },
   deljob(b) { const key = 'job:' + b.dataset.id; if (S.confirm !== key) { S.confirm = key; render(); return; } S.confirm = ''; act2('o_delete_job', { p_job: b.dataset.id }); },
@@ -406,7 +489,49 @@ const act = {
   delv(b) { act2('o_del_vehicle', { p_name: b.dataset.v }); },
   setowner() { const p = $('#opn').value; if (!pinOk(p)) { toast('Il PIN deve avere da 4 a 6 cifre'); return; } act2('o_set_owner_pin', { p_pin: p }).then(ok => { if (ok) toast('PIN del titolare cambiato'); }); }
 };
+async function loadFiles(id) {
+  try { S.files[id] = await call('o_list_files', { p_job: id }); } catch (e) { if (!e.expired) toast(e.message); S.files[id] = []; }
+  softRender();
+}
+async function prepFile(f) {              // PDF cosi' com'e', foto ridotta; ritorna { kind, name, mime, b64, blob }
+  if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) {
+    if (f.size > 4 * 1024 * 1024) throw new Error('PDF troppo grande (massimo 4 MB)');
+    return { kind: 'pdf', name: f.name, mime: 'application/pdf', b64: await toB64(f), blob: f };
+  }
+  if (!Sc()) throw new Error('Aggiorna la pagina e riprova');
+  const blob = await Sc().shrink(f, 1600, 0.8);
+  return { kind: 'photo', name: f.name.replace(/\.\w+$/, '') + '.jpg', mime: 'image/jpeg', b64: await toB64(blob), blob };
+}
 const chg = {
+  async imp(t) {
+    const f = t.files && t.files[0]; t.value = ''; if (!f) return;
+    if (!Sc()) { toast('Aggiorna la pagina e riprova'); return; }
+    S.draft.note = 'Lettura in corso…'; render();
+    try {
+      const file = await prepFile(f);
+      if (file.kind === 'pdf') {
+        const r = await Sc().readPdf(f);
+        if (!r.barcode && !r.plate && !r.code) throw new Error('Non riesco a leggere questo PDF: non sembra una scheda di accettazione.');
+        const ex = r.barcode ? Sc().matchJob(S.jobs, r.barcode) : null;
+        S.draft = { ...emptyDraft(), id: ex ? ex.id : '', code: r.code, plate: r.plate, barcode: r.barcode, desc: r.model, sheet: r.sheet_no, customer: r.customer, model: r.model, vin: r.vin, km: r.km, due: r.due, request: r.request,
+          file: { kind: file.kind, name: file.name, mime: file.mime, b64: file.b64 },
+          note: ex ? 'Questo lavoro esiste già (' + jobText(ex) + '): salvando aggiorno i dati e aggiungo il PDF.' : 'Scheda ' + (r.sheet_no || '') + ' letta. Controlla i dati e premi Aggiungi lavoro.' };
+      } else {
+        const bc = await Sc().barcodeFromImage(file.blob);
+        S.draft = { ...S.draft, barcode: bc || S.draft.barcode, file: { kind: file.kind, name: file.name, mime: file.mime, b64: file.b64 },
+          note: bc ? 'Foto allegata. Codice a barre letto: ' + bc + '. Completa gli altri dati e premi Aggiungi lavoro.' : 'Foto allegata, ma non riesco a leggere il codice a barre: usa Scansiona o scrivilo a mano.' };
+      }
+    } catch (e) { S.draft.note = ''; toast(e.message); }
+    render();
+  },
+  async addf(t) {
+    const f = t.files && t.files[0], jid = t.dataset.j; t.value = ''; if (!f) return;
+    try {
+      const file = await prepFile(f);
+      await call('o_add_file', { p_job: jid, p_kind: file.kind, p_name: file.name, p_mime: file.mime, p_b64: file.b64 });
+      delete S.files[jid]; toast('Documento archiviato'); loadFiles(jid); refresh();
+    } catch (e) { if (!e.expired) toast(e.message); }
+  },
   segf(t) {
     const s = get(S.segs, t.dataset.s); if (!s) return; s[t.dataset.f] = t.value;
     call('w_set_text', { p_seg: s.id, p_parts: s.parts, p_note: s.note }).catch(e => { if (!e.expired) toast('Non salvato: ' + e.message); });
@@ -428,6 +553,7 @@ const chg = {
   }
 };
 const live = {
+  dr(t) { S.draft[t.dataset.f] = t.value; },
   jq(t) { S.jq = t.value; const l = $('#joblist'); if (l) l.innerHTML = jobListHtml(); },
   jf(t) { S.jf = t.value; const l = $('#jobsadmin'); if (l) l.innerHTML = jobsAdminList(); }
 };
