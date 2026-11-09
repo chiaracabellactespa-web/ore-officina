@@ -22,10 +22,11 @@ const S = {
   role: null, token: '', wid: '', name: '', tab: 'timer',
   login: { mode: 'pick', wid: '', pin: '', err: '', busy: false },
   jobs: [], vehicles: [], busy: [], segs: [],      // operaio
-  o: { workers: [], segs: [] },                      // titolare
+  o: { workers: [], segs: [], subs: [], wt: [], cc: [], today: '' },   // titolare
   sel: '', jq: '', jf: '', confirm: '', rescueOpen: {},
   draft: null, openJob: '', files: {},
   sched: null, sch: null, alerts: [], pushReady: false, pushOn: false, open: {},
+  wt: [], cc: [], days: [], today: '', hard: '', typeSel: '', tbl: null, csel: {}, an: 'm3',
   rep: { mode: 'day', date: dstr(Date.now()), month: dstr(Date.now()).slice(0, 7), by: 'person' }
 };
 const nowMs = () => Date.now() + S.off;
@@ -46,7 +47,7 @@ function jobInfo(j, owner) {                     // dati della scheda sotto al l
   return `<div class="jinfo">${rows.map(([k, v]) => `<div><span>${k}</span><b>${esc(v)}</b></div>`).join('')}${j.request ? `<p><span>Lavoro richiesto</span>${nl(j.request)}</p>` : ''}</div>`;
 }
 const toB64 = blob => new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = () => ko(new Error('File non leggibile')); r.readAsDataURL(blob); });
-const normSeg = s => ({ id: s.id, wid: s.worker_id || S.wid, jobId: s.job_id, kind: s.kind, start: Date.parse(s.started_at), end: s.ended_at ? Date.parse(s.ended_at) : 0, parts: s.parts || '', note: s.note || '', rescues: s.rescues || [], ot: !!s.overtime, auto: !!s.auto_stopped });
+const normSeg = s => ({ id: s.id, wid: s.worker_id || S.wid, jobId: s.job_id, kind: s.kind, start: Date.parse(s.started_at), end: s.ended_at ? Date.parse(s.ended_at) : 0, parts: s.parts || '', note: s.note || '', rescues: s.rescues || [], ot: !!s.overtime, auto: !!s.auto_stopped, wt: s.work_type_id || '' });
 const jobHead = j => j ? `${j.code ? `<span class="tag ${j.type === 'gen' ? 'g' : ''}">${esc(j.code)}</span>` : ''}${j.plate ? `<span class="plate">${esc(j.plate)}</span>` : ''}<span>${esc(j.desc)}</span>` : '<span class="mut">(lavoro eliminato)</span>';
 /* ---------- orario dell'officina ---------- */
 const ROME = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Rome', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -67,6 +68,20 @@ const pushOk = () => !!(CFG.VAPID_PUBLIC_KEY && S.pushReady && schedOn() && 'ser
 function refreshPush() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
   navigator.serviceWorker.ready.then(r => r.pushManager.getSubscription()).then(sub => { S.pushOn = !!sub; softRender(); }).catch(() => {});
+}
+const wtName = id => ((S.o.wt.find(t => t.id === id) || S.wt.find(t => t.id === id)) || {}).name || '';
+const ccLabel = c => c ? `${c.code} ${c.name}` : '?';
+const fmtM = m => Math.floor(m / 60) + ':' + pad(m % 60);                      // minuti -> h:mm
+const parseH = v => { v = String(v || '').trim().replace(',', '.'); if (!v) return 0; let m; if ((m = /^(\d{1,2}):(\d{1,2})$/.exec(v))) return Number(m[1]) * 60 + Number(m[2]); return /^\d+(\.\d+)?$/.test(v) ? Math.round(parseFloat(v) * 60) : NaN; };
+const pastHard = () => !!(S.hard && schedOn() && romeNow(nowMs()).min >= toMin(S.hard));
+// straordinario "vero": la parte di un periodo in straordinario che cade dentro le fasce ordinarie conta come ordinaria
+function otMs(s, now) {
+  if (!s.ot || s.kind === 'break') return 0;
+  const end = s.end || now || nowMs(), tot = Math.max(0, end - s.start);
+  if (!schedOn() || !S.sched.days) return tot;
+  const d = dstr(s.start), dow = (new Date(s.start).getDay() + 6) % 7 + 1; let ov = 0;
+  for (const x of slotsOf(S.sched.days[dow])) { const a = Math.max(s.start, at(d, x[0])), b = Math.min(end, at(d, x[1])); if (b > a) ov += b - a; }
+  return Math.max(0, tot - ov);
 }
 const jobText = j => j ? [j.code, j.plate, j.desc].filter(Boolean).join(' · ') : '(lavoro eliminato)';
 
@@ -98,7 +113,8 @@ async function act2(fn, args) {          // azione + aggiornamento dati
 }
 const rangeOf = () => {
   const r = S.rep;
-  if (r.mode === 'day') return [r.date, r.date];
+  if (S.role === 'owner' && S.tab === 'analysis') { const k = { m1: 0, m3: 2, m6: 5, y: 11 }[S.an] ?? 2, t = new Date(); return [dstr(new Date(t.getFullYear(), t.getMonth() - k, 1)), dstr(new Date(t.getFullYear(), t.getMonth() + 1, 0))]; }
+  if (r.mode === 'day' && S.tab === 'report') return [r.date, r.date];
   const [y, m] = r.month.split('-').map(Number);
   return [r.month + '-01', r.month + '-' + pad(new Date(y, m, 0).getDate())];
 };
@@ -111,11 +127,13 @@ async function refresh() {
       S.off = Date.parse(r.now) - Date.now();
       S.jobs = r.jobs.map(normJob); S.vehicles = r.vehicles; S.o.workers = r.workers;
       S.o.segs = r.segments.map(normSeg); S.sched = r.schedule;
+      S.o.subs = r.subs || []; S.o.wt = r.work_types || []; S.o.cc = r.cost_centers || []; S.o.today = r.today || ''; S.hard = r.hard_stop || '';
     } else {
       const r = await call('w_state', {});
       S.off = Date.parse(r.now) - Date.now();
       S.jobs = r.jobs.map(normJob); S.vehicles = r.vehicles; S.busy = r.busy || [];
       S.segs = r.segments.map(normSeg); S.sched = r.schedule; S.alerts = r.alerts || []; S.pushReady = !!r.push_ready;
+      S.wt = r.work_types || []; S.cc = r.cost_centers || []; S.days = r.days || []; S.today = r.today || dstr(nowMs()); S.hard = r.hard_stop || '';
     }
     S.offline = false;
   } catch (e) { if (e.expired) return; S.offline = true; }
@@ -146,8 +164,8 @@ async function submitPin() {
 }
 function logout() {
   if (S.token) rpc('logout', { p_token: S.token }).catch(() => {});
-  Object.assign(S, { token: '', role: null, wid: '', name: '', jobs: [], segs: [], busy: [], sel: '', confirm: '', rescueOpen: {}, draft: emptyDraft(), openJob: '', files: {}, sched: null, sch: null, alerts: [], pushReady: false, pushOn: false, open: {} });
-  S.o = { workers: [], segs: [] };
+  Object.assign(S, { token: '', role: null, wid: '', name: '', jobs: [], segs: [], busy: [], sel: '', confirm: '', rescueOpen: {}, draft: emptyDraft(), openJob: '', files: {}, sched: null, sch: null, alerts: [], pushReady: false, pushOn: false, open: {}, wt: [], cc: [], days: [], today: '', hard: '', typeSel: '', tbl: null, csel: {} });
+  S.o = { workers: [], segs: [], subs: [], wt: [], cc: [], today: '' };
   S.login = { mode: 'pick', wid: '', pin: '', err: '', busy: false };
   loadWorkers();
 }
@@ -200,11 +218,12 @@ function loginView() {
 
 /* ----- operaio ----- */
 function workerShell() {
-  const body = S.tab === 'today' ? workerToday() : workerTimer();
-  return header() + `<main>${offlineBanner()}${body}</main>` + tabbar([['timer', 'Timer'], ['today', 'Oggi']]);
+  const body = S.tab === 'today' ? workerToday() : S.tab === 'hours' ? workerHours() : workerTimer();
+  const todo = pendingDays().length || (!S.days.some(d => d.day === S.today) && todaySegs().some(x => x.kind === 'work' && x.end)) ? 1 : 0;
+  return header() + `<main>${offlineBanner()}${body}</main>` + tabbar([['timer', 'Timer'], ['today', 'Oggi'], ['hours', 'Ore' + (todo ? ' <i class="bdg">!</i>' : '')]]);
 }
 const todaySegs = () => S.segs.filter(s => dstr(s.start) === dstr(nowMs()));
-function totals(list) { const n = nowMs(); let w = 0, b = 0, o = 0; for (const s of list) { const ms = Math.max(0, (s.end || n) - s.start); if (s.kind === 'break') b += ms; else { w += ms; if (s.ot) o += ms; } } return { w, b, o }; }
+function totals(list) { const n = nowMs(); let w = 0, b = 0, o = 0; for (const s of list) { const ms = Math.max(0, (s.end || n) - s.start); if (s.kind === 'break') b += ms; else { w += ms; o += otMs(s, n); } } return { w, b, o }; }
 const otSum = t => t.o ? `<span>Straordinario <b>${hhmm(t.o)}</b></span>` : '';
 function rescueBlock(s) {
   const open = S.rescueOpen[s.id] ?? s.rescues.length > 0;
@@ -225,12 +244,22 @@ function jobListHtml() {
 function alertsHtml() {
   const run = S.segs.some(s => !s.end);
   return S.alerts.map(a => {
-    const j = J(a.job_id), t = Date.parse(a.stopped_at), canOt = !run && j && j.open && !inHours(nowMs());
+    if (a.kind === 'reminder') return `<section class="card alert" role="alert"><h2>Compila le ore di oggi</h2><p>Indica quante ore hai fatto su ogni commessa (officina, carrozzeria, revisioni…).</p>
+    <div class="btns"><button class="btn big" data-act="gohours" data-id="${a.id}">Apri la tabella</button><button class="btn big sec" data-act="ackalert" data-id="${a.id}">Più tardi</button></div></section>`;
+    const j = J(a.job_id), t = Date.parse(a.stopped_at);
+    if (a.kind === 'hard') return `<section class="card alert" role="alert"><h2>Timer fermato alle ${hm(t)}</h2><p>Alle ${hm(t)} tutti i timer si fermano da soli${j ? ': quello su ' + jobHead(j) : ''}. Ricordati di compilare le ore per commessa.</p>
+    <div class="btns"><button class="btn big" data-act="gohours" data-id="${a.id}">Apri la tabella</button><button class="btn big sec" data-act="ackalert" data-id="${a.id}">Ok</button></div></section>`;
+    const canOt = !run && j && j.open && !inHours(nowMs()) && !pastHard();
     const nx = dstr(t) === dstr(nowMs()) ? nextSlotStart(t) : '', brk = nx && toMin(nx) > romeNow(nowMs()).min;   // fermato per la pausa di mezzogiorno
     return `<section class="card alert" role="alert"><h2>${brk ? 'Timer fermato per la pausa' : 'Timer fermato a fine orario'}</h2><p>Il timer su ${jobHead(j)} è stato fermato alle <b>${hm(t)}</b>, ${brk ? `alla fine della fascia della mattina. Alle ${nx} potrai riavviarlo normalmente.` : "alla fine dell'orario dell'officina."}${canOt ? ' Se stai ancora lavorando, avvia lo straordinario.' : ''}</p>
     <div class="btns ${canOt ? '' : 'one'}">${canOt ? `<button class="btn big amber" data-act="startot" data-id="${a.id}" data-job="${a.job_id}">Avvia straordinario</button>` : ''}<button class="btn big sec" data-act="ackalert" data-id="${a.id}">${canOt ? 'Ho finito' : 'Ok'}</button></div></section>`;
   }).join('');
 }
+function typeSelect(s, owner, id) {
+  const list = (owner ? S.o.wt : S.wt).filter(t => t.active !== false || t.id === s.wt);
+  return `<select ${id ? `id="${id}" ` : ''}class="tsel" aria-label="Tipo di lavoro" data-in="${owner ? 'otype' : 'wtype'}" data-s="${s.id}"><option value="">Tipo non indicato</option>${list.map(t => `<option value="${t.id}" ${t.id === s.wt ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>`;
+}
+const typeTag = s => s.kind === 'work' && s.wt ? ` <span class="tag t">${esc(wtName(s.wt))}</span>` : '';
 function workerTimer() {
   const now = nowMs(), run = S.segs.find(s => !s.end), t = totals(todaySegs());
   const out = schedOn() && !inHours(now), dh = dayHours(now);
@@ -242,6 +271,7 @@ function workerTimer() {
     const rd = slotEnd(run.start);
     main = `<section class="card run"><div class="note">In lavorazione dalle ${hm(run.start)}${run.ot ? ' <span class="tag ot">Straordinario</span>' : ''}</div><div class="jobline">${jobHead(J(run.jobId))}</div>
     <div class="clock" data-tick="${run.start}">${hms(now - run.start)}</div>
+    ${S.wt.length ? `<div style="margin:0 0 12px"><label for="rt">Tipo di lavoro</label>${typeSelect(run, false, 'rt')}</div>` : ''}
     ${!run.ot && rd ? `<p class="note" style="margin:0 0 10px">Il timer si ferma da solo alle ${rd}. Per continuare dopo, avvia lo straordinario.</p>` : ''}
     <div class="row"><div style="flex:2 1 200px"><label for="rp">Ricambi (uno per riga)</label><textarea id="rp" data-in="segf" data-f="parts" data-s="${run.id}" placeholder="es. Filtro olio ×1">${esc(run.parts)}</textarea></div>
     <div style="flex:2 1 200px"><label for="rn">Note</label><textarea id="rn" data-in="segf" data-f="note" data-s="${run.id}">${esc(run.note)}</textarea></div></div>
@@ -254,12 +284,14 @@ function workerTimer() {
     <div class="clock" data-tick="${run.start}">${hms(now - run.start)}</div>
     <div class="btns ${j ? '' : 'one'}">${j ? '<button class="btn big" data-act="resume">Riprendi</button>' : ''}<button class="btn big stop" data-act="stop">${j ? 'Fine giornata' : 'Fine pausa'}</button></div></section>`;
   } else {
-    const sj = J(S.sel);
-    main = `<section class="card"><h2>Scegli il lavoro</h2>
-    ${out ? `<div class="warn" role="status">${dh ? `Siamo fuori dall'orario dell'officina (${slotTxt(dh)}).` : "Oggi l'officina è chiusa."} Il tempo che avvii ora sarà registrato come <b>straordinario</b>.</div>` : ''}
+    const sj = J(S.sel), needT = !!(sj && sj.type !== 'gen' && S.wt.length), ph = pastHard();
+    if (ph) main = `<section class="card"><h2>Giornata chiusa</h2><p>Dopo le ${S.hard} i timer non si possono più avviare. Compila ora le ore per commessa.</p><div class="btns one"><button class="btn big" data-act="gohours">Apri la tabella ore</button></div></section>`;
+    else main = `<section class="card"><h2>Scegli il lavoro</h2>
+    ${out ? `<div class="warn" role="status">${dh ? `Siamo fuori dall'orario dell'officina (${slotTxt(dh)}).` : "Oggi l'officina è chiusa."} Il tempo che avvii ora sarà registrato come <b>straordinario</b>${S.hard ? `; alle ${S.hard} tutti i timer si fermano da soli` : ''}.</div>` : ''}
     <label for="jq">Codice, targa o codice a barre</label><div class="bcrow"><input id="jq" data-live="jq" value="${esc(S.jq)}" placeholder="Digita o scansiona, poi Invio" autocomplete="off"><button class="btn sec" data-act="scanw">Scansiona</button></div>
     <div class="pick" id="joblist">${jobListHtml()}</div>${jobInfo(sj)}
-    <div class="btns ${out ? 'one' : ''}" style="margin-top:14px"><button class="btn big ${out ? 'amber' : ''}" data-act="start" ${sj ? '' : 'disabled'}>${sj ? (out ? 'Avvia straordinario' : 'Avvia') : 'Scegli un lavoro'}</button>${out ? '' : '<button class="btn big steel" data-act="startbreak">Pausa</button>'}</div></section>`;
+    ${needT ? `<div style="margin-top:12px"><label for="wts">Tipo di lavoro</label><select id="wts" class="tsel" data-in="wt"><option value="">Scegli il tipo…</option>${S.wt.map(t => `<option value="${t.id}" ${S.typeSel === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>` : ''}
+    <div class="btns ${out ? 'one' : ''}" style="margin-top:14px"><button class="btn big ${out ? 'amber' : ''}" data-act="start" ${sj && (!needT || S.typeSel) ? '' : 'disabled'}>${!sj ? 'Scegli un lavoro' : needT && !S.typeSel ? 'Scegli il tipo di lavoro' : (out ? 'Avvia straordinario' : 'Avvia')}</button>${out ? '' : '<button class="btn big steel" data-act="startbreak">Pausa</button>'}</div></section>`;
   }
   return alertsHtml() + main + `<div class="sumline"><span>Lavorato oggi <b>${hhmm(t.w)}</b></span>${otSum(t)}<span>Pause <b>${hhmm(t.b)}</b></span></div>`;
 }
@@ -268,20 +300,57 @@ function workerToday() {
   return `<div class="sumline"><span>Lavorato <b>${hhmm(t.w)}</b></span>${otSum(t)}<span>Pause <b>${hhmm(t.b)}</b></span></div>
   ${segs.length ? segs.map(s => `<div class="seg ${s.kind === 'break' ? 'brk' : ''}"><div class="t"><span>${hm(s.start)} – ${s.end ? hm(s.end) : 'in corso'}</span><span class="d">${hhmm((s.end || now) - s.start)}</span></div>
   <div>${s.kind === 'break' ? '<span class="tag s">Pausa</span>' : jobHead(J(s.jobId))}${s.ot ? ' <span class="tag ot">Straordinario</span>' : ''}${s.auto ? ' <span class="tag s">Fermato a fine orario</span>' : ''}</div>
+  ${s.kind === 'work' && S.wt.length ? `<div style="margin-top:8px">${typeSelect(s, false)}</div>` : ''}
   ${s.kind === 'work' ? `<div class="row" style="margin-top:8px"><div><label for="p${s.id}">Ricambi</label><textarea id="p${s.id}" rows="2" data-in="segf" data-f="parts" data-s="${s.id}">${esc(s.parts)}</textarea></div><div><label for="n${s.id}">Note</label><textarea id="n${s.id}" rows="2" data-in="segf" data-f="note" data-s="${s.id}">${esc(s.note)}</textarea></div></div>${rescueBlock(s)}` : ''}</div>`).join('') : '<div class="empty">Nessun tempo registrato oggi. Avvia un lavoro dalla scheda Timer.</div>'}
   <p class="note">Se hai dimenticato di avviare o fermare un timer, avvisa il titolare: può correggere gli orari dal report.</p>${pushCard()}`;
 }
+const dayName = d => new Date(d + 'T12:00').toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
+function pendingDays() {          // giorni recenti con lavoro registrato e tabella non ancora inviata
+  const have = new Set(S.days.map(d => d.day)), today = S.today || dstr(nowMs());
+  return [...new Set(S.segs.filter(x => x.kind === 'work' && x.end).map(x => dstr(x.start)))].filter(d => d < today && !have.has(d)).sort();
+}
+function tblGet() {
+  const day = (S.tbl && S.tbl.day) || S.today || dstr(nowMs());
+  if (!S.tbl || S.tbl.init !== day) { const sub = S.days.find(d => d.day === day), vals = {}; if (sub) sub.entries.forEach(e => { vals[e.cc] = fmtM(e.minutes); }); S.tbl = { day, init: day, vals }; }
+  return S.tbl;
+}
+function tblSum() { const T = tblGet(); let t = 0; for (const v of Object.values(T.vals)) { const m = parseH(v); if (m > 0) t += m; } return t; }
+function tblTotalHtml() {
+  const T = tblGet(), t = tblSum(), tm = Math.round(totals(S.segs.filter(x => dstr(x.start) === T.day)).w / 60000), diff = t - tm;
+  return `Totale inserito <b>${fmtM(t)}</b>${tm ? ` · timer ${fmtM(tm)}` : ''}${tm && Math.abs(diff) >= 30 ? ` <span class="tag ot">${diff > 0 ? '+' : '−'}${fmtM(Math.abs(diff))} rispetto al timer</span>` : ''}`;
+}
+function workerHours() {
+  const T = tblGet(), sub = S.days.find(d => d.day === T.day), locked = !!(sub && sub.confirmed_at), today = S.today || dstr(nowMs());
+  const from = dstr(Date.parse(today + 'T12:00') - 7 * 864e5);
+  const opts = [...new Set([today, ...pendingDays(), ...S.days.filter(d => d.day >= from).map(d => d.day), T.day])].sort().reverse();
+  const list = [...S.cc];
+  (sub ? sub.entries : []).forEach(e => { if (!list.some(c => c.id === e.cc)) list.push({ id: e.cc, code: e.code, name: e.name }); });
+  const pend = pendingDays().filter(d => d !== T.day);
+  return `${pend.length ? `<div class="warn" role="status">Hai ${pend.length === 1 ? 'un giorno' : pend.length + ' giorni'} senza tabella ore: ${pend.map(d => `<button class="linkb" data-act="goday" data-d="${d}">${dayName(d)}</button>`).join(', ')}.</div>` : ''}
+  <section class="card"><h2>Ore per commessa</h2>
+  <p class="note" style="margin-top:0">A fine giornata scrivi quante ore hai fatto su ogni commessa. Puoi scrivere <b>1:30</b> oppure <b>1,5</b>. Lascia vuote le commesse che non hai fatto.</p>
+  <label for="tday">Giorno</label><select id="tday" data-in="tday">${opts.map(d => `<option value="${d}" ${d === T.day ? 'selected' : ''}>${d === today ? 'Oggi · ' : ''}${dayName(d)}</option>`).join('')}</select>
+  ${locked ? '<div class="okbox" role="status"><b>Confermato dal titolare.</b> Per correggere chiedi al titolare di riaprire la giornata.</div>' : sub ? `<p class="note">Inviata il ${new Date(sub.submitted_at).toLocaleDateString('it-IT')} alle ${hm(Date.parse(sub.submitted_at))}. In attesa di conferma del titolare${T.day >= today ? ' (da domani)' : ''}. Puoi ancora modificarla.</p>` : ''}
+  <div class="hgrid">${list.map(c => `<div class="hrow"><label for="h_${c.id}"><b>${esc(c.code)}</b> ${esc(c.name)}</label><input id="h_${c.id}" inputmode="decimal" autocomplete="off" placeholder="0:00" data-live="tb" data-c="${c.id}" value="${esc(T.vals[c.id] || '')}" ${locked ? 'disabled' : ''}></div>`).join('') || '<div class="empty">Nessuna commessa: il titolare le aggiunge da Anagrafiche.</div>'}</div>
+  <div class="tbltot" id="tbltot">${tblTotalHtml()}</div>
+  ${locked ? '' : `<div class="btns one" style="margin-top:12px"><button class="btn big" data-act="saveday">${sub ? 'Aggiorna le ore' : 'Invia le ore'}</button></div>`}</section>
+  <section class="card"><h2>Le mie ore inserite</h2>
+  ${S.days.length ? S.days.map(d => `<div class="hist"><div class="hh"><b>${dayName(d.day)}</b><span class="chip ${d.confirmed_at ? 'ok' : 'wait'}">${d.confirmed_at ? 'Confermato' : 'In attesa'}</span><span class="ht">${fmtM(d.entries.reduce((a, e) => a + e.minutes, 0))}</span></div>
+    <div class="hl">${d.entries.map(e => `<span>${esc(e.code)} ${esc(e.name)} <b>${fmtM(e.minutes)}</b></span>`).join('')}</div></div>`).join('') : '<div class="empty">Non hai ancora inserito ore. Comincia stasera.</div>'}
+  <p class="note" style="margin-bottom:0">Qui vedi sempre quello che hai inserito e se il titolare lo ha confermato.</p></section>`;
+}
 function pushCard() {
   if (!pushOk()) return '';
-  if (S.pushOn) return `<div class="card"><h2>Notifiche attive</h2><p class="note" style="margin-top:0">Questo telefono riceve un avviso quando un timer viene fermato a fine orario.</p><button class="btn sec" data-act="pushoff">Disattiva notifiche</button></div>`;
+  if (S.pushOn) return `<div class="card"><h2>Notifiche attive</h2><p class="note" style="margin-top:0">Questo telefono riceve un avviso quando un timer viene fermato e il promemoria per compilare le ore.</p><button class="btn sec" data-act="pushoff">Disattiva notifiche</button></div>`;
   const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
   return `<div class="card"><h2>Notifiche</h2><p class="note" style="margin-top:0">Ricevi un avviso sul telefono quando un timer viene fermato a fine orario, anche con l'app chiusa.${ios ? ' Su iPhone aggiungi prima l\'app alla schermata Home e aprila da lì.' : ''}</p><button class="btn" data-act="pushon" ${ios ? 'disabled' : ''}>Attiva notifiche</button></div>`;
 }
 
 /* ----- titolare ----- */
 function ownerShell() {
-  const body = { report: ownerReport, jobs: ownerJobs, people: ownerPeople }[S.tab]();
-  return header() + `<main class="wide">${offlineBanner()}${body}</main>` + tabbar([['report', 'Report'], ['jobs', 'Lavori'], ['people', 'Anagrafiche']]);
+  const body = { report: ownerReport, confirm: ownerConfirm, analysis: ownerAnalysis, jobs: ownerJobs, people: ownerPeople }[S.tab]();
+  const today = S.o.today || dstr(nowMs()), np = S.o.subs.filter(x => !x.confirmed_at && x.day < today).length;
+  return header() + `<main class="wide">${offlineBanner()}${body}</main>` + tabbar([['report', 'Report'], ['confirm', 'Ore' + (np ? ` <i class="bdg">${np}</i>` : '')], ['analysis', 'Analisi'], ['jobs', 'Lavori'], ['people', 'Anagrafiche']]);
 }
 function periodSegs() {
   const [from, to] = rangeOf();
@@ -291,14 +360,15 @@ function aggPeople(segs, monthMode) {
   const out = {}, now = nowMs();
   for (const s of segs) {
     const date = dstr(s.start);
-    const p = out[s.wid] ??= { jobs: {}, work: 0, ot: 0, brk: 0, byDay: {}, byDayOt: {}, first: Infinity, last: 0, running: false };
+    const p = out[s.wid] ??= { jobs: {}, work: 0, ot: 0, brk: 0, byDay: {}, byDayOt: {}, types: {}, first: Infinity, last: 0, running: false };
     const ms = Math.max(0, (s.end || now) - s.start);
     if (!s.end) p.running = true;
     p.first = Math.min(p.first, s.start); p.last = Math.max(p.last, s.end || now);
     if (s.kind === 'break') { p.brk += ms; continue; }
     p.work += ms; p.byDay[date] = (p.byDay[date] || 0) + ms;
-    const j = p.jobs[s.jobId || 'none'] ??= { ms: 0, ot: 0, parts: [], notes: [], rescues: [] };
-    if (s.ot) { p.ot += ms; p.byDayOt[date] = (p.byDayOt[date] || 0) + ms; j.ot += ms; }
+    const j = p.jobs[s.jobId || 'none'] ??= { ms: 0, ot: 0, parts: [], notes: [], rescues: [], types: {} };
+    const om = otMs(s, now); if (om) { p.ot += om; p.byDayOt[date] = (p.byDayOt[date] || 0) + om; j.ot += om; }
+    const tk = s.wt || '-'; p.types[tk] = (p.types[tk] || 0) + ms; j.types[tk] = (j.types[tk] || 0) + ms;
     j.ms += ms; const pre = monthMode ? ddmm(date) + ' ' : '';
     if (s.parts) j.parts.push(...s.parts.split('\n').map(x => x.trim()).filter(Boolean).map(x => pre + x));
     if (s.note) j.notes.push(pre + s.note);
@@ -310,21 +380,25 @@ function aggJobs(segs) {
   const out = {}, now = nowMs();
   for (const s of segs) {
     if (s.kind === 'break') continue;
-    const ms = Math.max(0, (s.end || now) - s.start), a = out[s.jobId || 'none'] ??= { ms: 0, ot: 0, byW: {}, byWot: {}, parts: [], notes: [], rescues: [] }, who = (W(s.wid) || {}).name || '?';
+    const ms = Math.max(0, (s.end || now) - s.start), a = out[s.jobId || 'none'] ??= { ms: 0, ot: 0, byW: {}, byWot: {}, types: {}, parts: [], notes: [], rescues: [] }, who = (W(s.wid) || {}).name || '?';
     a.ms += ms; a.byW[s.wid] = (a.byW[s.wid] || 0) + ms;
-    if (s.ot) { a.ot += ms; a.byWot[s.wid] = (a.byWot[s.wid] || 0) + ms; }
+    const tk = s.wt || '-'; a.types[tk] = (a.types[tk] || 0) + ms;
+    const om = otMs(s, now); if (om) { a.ot += om; a.byWot[s.wid] = (a.byWot[s.wid] || 0) + om; }
     if (s.parts) a.parts.push(...s.parts.split('\n').map(x => x.trim()).filter(Boolean).map(x => x + ' (' + who + ')'));
     if (s.note) a.notes.push(who + ': ' + s.note);
     if (s.rescues.length) a.rescues.push(who + ': ' + s.rescues.join(', '));
   }
   return out;
 }
+const kpi = (l, v, sub) => `<div class="kpi"><span>${l}</span><b>${v}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+const typeChips = types => Object.entries(types).sort((a, b) => b[1] - a[1]).map(([k, ms]) => `<span class="tc">${k === '-' ? 'Tipo non indicato' : esc(wtName(k))} <b>${hhmm(ms)}</b></span>`).join('');
 function ownerReport() {
   const r = S.rep, segs = periodSegs(), now = nowMs();
   const label = r.mode === 'day' ? new Date(r.date + 'T12:00').toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : new Date(r.month + '-01T12:00').toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
   const people = aggPeople(segs, r.mode === 'month');
   const totOt = Object.values(people).reduce((a, p) => a + p.ot, 0);
   const total = Object.values(people).reduce((a, p) => a + p.work, 0), brk = Object.values(people).reduce((a, p) => a + p.brk, 0);
+  const njobs = new Set(segs.filter(s => s.kind === 'work' && s.jobId).map(s => s.jobId)).size;
   const running = S.o.segs.filter(s => !s.end);
   const resc = segs.filter(s => s.rescues.length);
   return `${running.length ? `<div class="card"><h2>In corso adesso</h2>${running.map(s => `<div class="live"><span><b>${esc((W(s.wid) || {}).name || '?')}</b> ${s.kind === 'break' ? '<span class="tag s">Pausa</span>' : jobHead(J(s.jobId))}${s.ot ? ' <span class="tag ot">Straordinario</span>' : ''}</span><span class="c" data-tick="${s.start}">${hms(now - s.start)}</span></div>`).join('')}</div>` : ''}
@@ -333,44 +407,140 @@ function ownerReport() {
   <div class="seggroup" style="flex:0 0 auto"><button data-act="rby" data-v="person" aria-pressed="${r.by === 'person'}">Per persona</button><button data-act="rby" data-v="job" aria-pressed="${r.by === 'job'}">Per lavoro</button></div>
   <div>${r.mode === 'day' ? `<input type="date" id="rd" data-in="rd" value="${r.date}" aria-label="Data">` : `<input type="month" id="rm" data-in="rm" value="${r.month}" aria-label="Mese">`}</div>
   <button class="btn sec" data-act="csv" style="flex:0 0 auto">Esporta CSV</button><button class="btn sec" data-act="print" style="flex:0 0 auto">Stampa</button></div></div>
-  <div class="card"><div class="row" style="align-items:center"><h2 style="flex:3 1 200px;text-transform:capitalize;margin:0">${label}</h2><div class="total" style="flex:1 1 auto">${hhmm(total)} <small>ore lavorate${totOt ? ' · di cui straordinario ' + hhmm(totOt) : ''} · pause ${hhmm(brk)}</small></div></div>
-  ${resc.length ? `<p><span class="tag r">Soccorso stradale</span>${resc.map(s => `${esc((W(s.wid) || {}).name || '?')} su ${esc(jobText(J(s.jobId)))} (${esc(s.rescues.join(', '))}${r.mode === 'month' ? ', ' + ddmm(dstr(s.start)) : ''})`).join(' · ')}</p>` : ''}
-  ${segs.length ? (r.by === 'person' ? reportByPerson(people, segs) : reportByJob(segs)) : '<div class="empty" style="margin-top:12px">Nessun tempo registrato in questo periodo.</div>'}</div>`;
+  <h2 class="rtitle" style="text-transform:capitalize">${label}</h2>
+  <div class="kpis">${kpi('Ore lavorate', hhmm(total))}${kpi('Straordinario', hhmm(totOt))}${kpi('Pause', hhmm(brk))}${kpi(r.by === 'person' ? 'Persone' : 'Lavori', r.by === 'person' ? Object.keys(people).length : njobs)}</div>
+  ${resc.length ? `<div class="card"><span class="tag r">Soccorso stradale</span> ${resc.map(s => `${esc((W(s.wid) || {}).name || '?')} su ${esc(jobText(J(s.jobId)))} (${esc(s.rescues.join(', '))}${r.mode === 'month' ? ', ' + ddmm(dstr(s.start)) : ''})`).join(' · ')}</div>` : ''}
+  ${segs.length ? (r.by === 'person' ? reportByPerson(people, segs) : reportByJob(segs)) : '<div class="empty" style="margin-top:12px">Nessun tempo registrato in questo periodo.</div>'}`;
+}
+function ccBlock(wid) {
+  const r = S.rep, [from, to] = rangeOf(), today = S.o.today || dstr(nowMs());
+  const subs = S.o.subs.filter(x => x.worker_id === wid && x.day >= from && x.day <= to);
+  const head = (chip) => `<h4>Ore per commessa ${chip}</h4>`;
+  if (!subs.length) return `<div class="bsec">${head(r.mode === 'day' && r.date >= today ? '<span class="chip wait">Non ancora compilata</span>' : '<span class="chip no">Non compilata</span>')}</div>`;
+  const sum = {}; let tot = 0;
+  subs.forEach(x => x.entries.forEach(e => { sum[e.cc] = (sum[e.cc] || 0) + e.minutes; tot += e.minutes; }));
+  const conf = subs.filter(x => x.confirmed_at).length;
+  let chip, btn = '';
+  if (r.mode === 'day') {
+    const x = subs[0];
+    chip = x.confirmed_at ? '<span class="chip ok">Confermato</span>' : x.day < today ? '<span class="chip wait">Da confermare</span>' : '<span class="chip wait">Inviata · si conferma da domani</span>';
+    btn = x.confirmed_at ? `<button class="btn sec sm" data-act="reopen" data-w="${wid}" data-d="${x.day}">Riapri</button>` : x.day < today ? `<button class="btn sm" data-act="confirm1" data-w="${wid}" data-d="${x.day}">Conferma</button>` : '';
+  } else chip = `<span class="chip ${conf === subs.length ? 'ok' : 'wait'}">${conf}/${subs.length} giorni confermati</span>`;
+  const rows = Object.entries(sum).sort((a, b) => b[1] - a[1]);
+  return `<div class="bsec">${head(chip)}<div class="ccg">${rows.map(([id, m]) => `<div class="ccb"><span>${esc(ccLabel(S.o.cc.find(c => c.id === id)))}</span><b>${fmtM(m)}</b></div>`).join('')}</div>
+  <div class="cmp">Tabella <b>${fmtM(tot)}</b>${btn ? ' ' + btn : ''}</div></div>`;
 }
 function reportByPerson(people, segs) {
   const r = S.rep, ids = Object.keys(people).sort((a, b) => byName(W(a) || {}, W(b) || {}));
   return ids.map(id => {
     const p = people[id], name = (W(id) || {}).name || '(operaio eliminato)', days = Object.keys(p.byDay).length;
     const rows = Object.entries(p.jobs).sort((a, b) => b[1].ms - a[1].ms);
-    return `<h3 class="sub">${esc(name)}<span class="mut">${r.mode === 'day' ? `${hm(p.first)} – ${p.running ? 'in corso' : hm(p.last)} · ` : `${days} giorni · `}${p.ot ? 'straordinario ' + hhmm(p.ot) + ' · ' : ''}pause ${hhmm(p.brk)}</span></h3>
-    <div class="wrapx"><table class="rt"><tr><th>Lavoro</th><th>Ricambi</th><th>Note</th><th class="n">Ore</th></tr>
-    ${rows.map(([jid, x]) => `<tr><td>${jobHead(J(jid))}${x.rescues.length ? `<div><span class="tag r">Soccorso</span>${esc(x.rescues.join(' · '))}</div>` : ''}</td><td>${nl(x.parts.join('\n'))}</td><td>${nl(x.notes.join('\n'))}</td><td class="n">${hhmm(x.ms)}${x.ot ? `<div class="otl">str. ${hhmm(x.ot)}</div>` : ''}</td></tr>`).join('') || '<tr><td colspan="4" class="mut">Solo pause registrate.</td></tr>'}
-    <tr class="sum"><td colspan="3">Totale lavorato</td><td class="n">${hhmm(p.work)}</td></tr>${p.ot ? `<tr class="sum"><td colspan="3">di cui straordinario</td><td class="n">${hhmm(p.ot)}</td></tr>` : ''}</table></div>
-    ${r.mode === 'month' ? `<details data-k="days:${id}"${dOpen('days:' + id, false)}><summary>Ore per giorno</summary><div class="wrapx"><table>${Object.entries(p.byDay).sort().map(([d, ms]) => `<tr><td>${ddmm(d)}</td><td class="n">${hhmm(ms)}${p.byDayOt[d] ? ` <span class="otl">(str. ${hhmm(p.byDayOt[d])})</span>` : ''}</td></tr>`).join('')}</table></div></details>` : fixPanel(id, r.date, segs.filter(s => s.wid === id))}`;
+    return `<section class="box"><div class="bh"><div><h3 class="pn">${esc(name)}</h3><div class="meta">${r.mode === 'day' ? `${hm(p.first)} – ${p.running ? 'in corso' : hm(p.last)}` : `${days} giorni`} · pause ${hhmm(p.brk)}</div></div>
+    <div class="bt"><b>${hhmm(p.work)}</b><small>ore lavorate</small>${p.ot ? `<span class="tag ot">straordinario ${hhmm(p.ot)}</span>` : ''}</div></div>
+    ${Object.keys(p.types).length > 1 || !p.types['-'] ? `<div class="tcs">${typeChips(p.types)}</div>` : ''}
+    <div class="bb">${rows.map(([jid, x]) => `<div class="jr"><div class="jm">${jobHead(J(jid))}</div><div class="jh"><b>${hhmm(x.ms)}</b>${x.ot ? `<span class="otl">str. ${hhmm(x.ot)}</span>` : ''}</div>
+      ${Object.keys(x.types).some(k => k !== '-') ? `<div class="jx">${typeChips(x.types)}</div>` : ''}
+      ${x.rescues.length ? `<div class="jx"><span class="tag r">Soccorso</span> ${esc(x.rescues.join(' · '))}</div>` : ''}
+      ${x.parts.length ? `<div class="jx"><span class="lb">Ricambi</span> ${nl(x.parts.join('\n'))}</div>` : ''}${x.notes.length ? `<div class="jx"><span class="lb">Note</span> ${nl(x.notes.join('\n'))}</div>` : ''}</div>`).join('') || '<div class="mut" style="padding:8px 0">Solo pause registrate.</div>'}</div>
+    ${ccBlock(id)}
+    ${r.mode === 'month' ? `<details data-k="days:${id}"${dOpen('days:' + id, false)}><summary>Ore per giorno</summary><div class="wrapx"><table>${Object.entries(p.byDay).sort().map(([d, ms]) => `<tr><td>${ddmm(d)}</td><td class="n">${hhmm(ms)}${p.byDayOt[d] ? ` <span class="otl">(str. ${hhmm(p.byDayOt[d])})</span>` : ''}</td></tr>`).join('')}</table></div></details>` : fixPanel(id, r.date, segs.filter(s => s.wid === id))}</section>`;
   }).join('');
 }
 function fixPanel(wid, date, list) {
   const segs = [...list].sort((a, b) => a.start - b.start);
   return `<details data-k="fix:${wid}"${dOpen('fix:' + wid, false)}><summary>Correggi orari</summary>
-  ${segs.map(s => `<div class="fix"><span>${s.kind === 'break' ? '<span class="tag s">Pausa</span>' : jobHead(J(s.jobId))}${s.auto ? ' <span class="tag s">fermato a fine orario</span>' : ''}${s.kind === 'work' ? `<br><label class="chk sm"><input type="checkbox" data-in="segot" data-s="${s.id}" ${s.ot ? 'checked' : ''}> Straordinario</label>` : ''}</span>
+  ${segs.map(s => `<div class="fix"><span>${s.kind === 'break' ? '<span class="tag s">Pausa</span>' : jobHead(J(s.jobId))}${s.auto ? ' <span class="tag s">fermato a fine orario</span>' : ''}${s.kind === 'work' ? `<br><label class="chk sm"><input type="checkbox" data-in="segot" data-s="${s.id}" ${s.ot ? 'checked' : ''}> Straordinario</label>${S.o.wt.length ? `<br>${typeSelect(s, true)}` : ''}` : ''}</span>
   <input type="time" aria-label="Inizio" data-in="segtime" data-s="${s.id}" data-d="${date}" data-which="start" value="${hm(s.start)}">
   <input type="time" aria-label="Fine" data-in="segtime" data-s="${s.id}" data-d="${date}" data-which="end" value="${s.end ? hm(s.end) : ''}">
   <button class="btn del" data-act="delseg" data-s="${s.id}">${S.confirm === 'seg:' + s.id ? 'Conferma' : 'Elimina'}</button></div>`).join('')}
   <h3 style="font-size:19px;margin:14px 0 6px">Aggiungi tempo manuale</h3>
   <div class="row"><div><label for="ak_${wid}">Tipo</label><select id="ak_${wid}"><option value="work">Lavoro</option><option value="break">Pausa</option></select></div>
   <div style="flex:2 1 200px"><label for="aj_${wid}">Lavoro</label><select id="aj_${wid}"><option value="">Scegli…</option>${S.jobs.map(j => `<option value="${j.id}">${esc(jobText(j))}</option>`).join('')}</select></div>
+  <div><label for="at_${wid}">Tipo di lavoro</label><select id="at_${wid}"><option value="">Non indicato</option>${S.o.wt.filter(t => t.active).map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
   <div><label for="ao_${wid}">Fascia</label><select id="ao_${wid}"><option value="0">Ordinario</option><option value="1">Straordinario</option></select></div>
   <div><label for="as_${wid}">Inizio</label><input id="as_${wid}" type="time"></div><div><label for="ae_${wid}">Fine</label><input id="ae_${wid}" type="time"></div>
   <button class="btn sec" data-act="addseg" data-w="${wid}" data-d="${date}">Aggiungi</button></div></details>`;
 }
 function reportByJob(segs) {
   const agg = aggJobs(segs);
-  return Object.entries(agg).sort((a, b) => b[1].ms - a[1].ms).map(([jid, a]) => `<h3 class="sub">${jobHead(J(jid))}</h3>
-  <div class="wrapx"><table><tr><th>Operaio</th><th class="n">Ore</th></tr>
-  ${Object.entries(a.byW).sort((x, y) => y[1] - x[1]).map(([w, ms]) => `<tr><td>${esc((W(w) || {}).name || '?')}</td><td class="n">${hhmm(ms)}${a.byWot[w] ? `<div class="otl">str. ${hhmm(a.byWot[w])}</div>` : ''}</td></tr>`).join('')}
-  <tr class="sum"><td>Totale lavoro</td><td class="n">${hhmm(a.ms)}</td></tr>${a.ot ? `<tr class="sum"><td>di cui straordinario</td><td class="n">${hhmm(a.ot)}</td></tr>` : ''}</table></div>
-  ${a.rescues.length ? `<p style="margin:8px 0 2px"><span class="tag r">Soccorso stradale</span>${esc(a.rescues.join(' · '))}</p>` : ''}
-  ${a.parts.length ? `<p style="margin:8px 0 2px"><b>Ricambi</b><br>${nl(a.parts.join('\n'))}</p>` : ''}${a.notes.length ? `<p style="margin:8px 0 0"><b>Note</b><br>${nl(a.notes.join('\n'))}</p>` : ''}`).join('') || '<div class="empty">Nessun lavoro in questo periodo.</div>';
+  return Object.entries(agg).sort((a, b) => b[1].ms - a[1].ms).map(([jid, a]) => `<section class="box"><div class="bh"><div class="jm big">${jobHead(J(jid))}</div><div class="bt"><b>${hhmm(a.ms)}</b><small>ore sul lavoro</small>${a.ot ? `<span class="tag ot">straordinario ${hhmm(a.ot)}</span>` : ''}</div></div>
+  ${Object.keys(a.types).some(k => k !== '-') ? `<div class="tcs">${typeChips(a.types)}</div>` : ''}
+  <div class="bb">${Object.entries(a.byW).sort((x, y) => y[1] - x[1]).map(([w, ms]) => `<div class="jr"><div class="jm"><b>${esc((W(w) || {}).name || '?')}</b></div><div class="jh"><b>${hhmm(ms)}</b>${a.byWot[w] ? `<span class="otl">str. ${hhmm(a.byWot[w])}</span>` : ''}</div></div>`).join('')}
+  ${a.rescues.length ? `<div class="jx"><span class="tag r">Soccorso</span> ${esc(a.rescues.join(' · '))}</div>` : ''}
+  ${a.parts.length ? `<div class="jx"><span class="lb">Ricambi</span> ${nl(a.parts.join('\n'))}</div>` : ''}${a.notes.length ? `<div class="jx"><span class="lb">Note</span> ${nl(a.notes.join('\n'))}</div>` : ''}</div></section>`).join('') || '<div class="empty">Nessun lavoro in questo periodo.</div>';
+}
+/* ----- conferme ore per commessa ----- */
+const subKey = x => x.worker_id + '|' + x.day;
+const subMin = x => x.entries.reduce((a, e) => a + e.minutes, 0);
+function ownerConfirm() {
+  const today = S.o.today || dstr(nowMs()), [from, to] = rangeOf(), r = S.rep;
+  const label = new Date(r.month + '-01T12:00').toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
+  const pend = S.o.subs.filter(x => !x.confirmed_at && x.day < today).sort((a, b) => a.day < b.day ? 1 : a.day > b.day ? -1 : byName(W(a.worker_id) || {}, W(b.worker_id) || {}));
+  const todayS = S.o.subs.filter(x => !x.confirmed_at && x.day >= today);
+  const done = S.o.subs.filter(x => x.confirmed_at && x.day >= from && x.day <= to).sort((a, b) => a.day < b.day ? 1 : -1);
+  const have = new Set(S.o.subs.map(subKey)), miss = new Set();
+  S.o.segs.forEach(s => { const d = dstr(s.start); if (s.kind === 'work' && s.end && d < today && d >= from && d <= to && !have.has(s.wid + '|' + d)) miss.add(s.wid + '|' + d); });
+  const entries = x => x.entries.map(e => `<span>${esc(ccLabel(S.o.cc.find(c => c.id === e.cc)))} <b>${fmtM(e.minutes)}</b></span>`).join('');
+  const timerMin = x => Math.round(S.o.segs.filter(s => s.wid === x.worker_id && s.kind === 'work' && dstr(s.start) === x.day).reduce((a, s) => a + Math.max(0, (s.end || nowMs()) - s.start), 0) / 60000);
+  const nsel = pend.filter(x => S.csel[subKey(x)]).length;
+  const row = (x, withBox) => { const t = timerMin(x), m = subMin(x), df = m - t; return `<div class="crow">${withBox ? `<label class="cbox"><input type="checkbox" data-in="csel" data-k="${subKey(x)}" ${S.csel[subKey(x)] ? 'checked' : ''} aria-label="Seleziona"></label>` : ''}
+    <div class="cm"><div class="ch"><b>${esc((W(x.worker_id) || {}).name || '?')}</b> <span class="mut">${dayName(x.day)}</span></div><div class="hl">${entries(x)}</div>
+    <div class="cmp">Tabella <b>${fmtM(m)}</b>${t ? ` · timer ${fmtM(t)}${Math.abs(df) >= 30 ? ` <span class="tag ot">${df > 0 ? '+' : '−'}${fmtM(Math.abs(df))}</span>` : ''}` : ''}</div></div>
+    <div class="ca">${x.confirmed_at ? `<button class="btn sec sm" data-act="reopen" data-w="${x.worker_id}" data-d="${x.day}">Riapri</button>` : x.day < today ? `<button class="btn sm" data-act="confirm1" data-w="${x.worker_id}" data-d="${x.day}">Conferma</button>` : ''}</div></div>`; };
+  return `<div class="card"><div class="row" style="align-items:center"><h2 style="flex:1 1 auto;margin:0">Conferma ore per commessa</h2><div><input type="month" id="rm" data-in="rm" value="${r.month}" aria-label="Mese"></div></div>
+  <p class="note" style="margin-bottom:0">Gli operai compilano la tabella a fine giornata. Dal giorno successivo puoi confermarla: da quel momento non possono più modificarla (puoi sempre riaprirla).</p></div>
+  <section class="box"><div class="bh"><div><h3 class="pn">Da confermare</h3><div class="meta">${pend.length ? pend.length + ' tabelle' : 'Tutto confermato'}</div></div>
+  ${pend.length ? `<div class="bt"><button class="btn sm sec" data-act="selall">Seleziona tutte</button> <button class="btn sm" data-act="confsel" ${nsel ? '' : 'disabled'}>Conferma selezionate (${nsel})</button></div>` : ''}</div>
+  <div class="bb">${pend.map(x => row(x, true)).join('') || '<div class="mut" style="padding:8px 0">Nessuna tabella in attesa.</div>'}</div></section>
+  ${miss.size ? `<section class="box"><div class="bh"><div><h3 class="pn">Non compilate</h3><div class="meta">Giorni di ${label} con timer ma senza tabella</div></div></div><div class="bb">${[...miss].sort().reverse().map(k => { const [w, d] = k.split('|'); return `<div class="crow"><div class="cm"><b>${esc((W(w) || {}).name || '?')}</b> <span class="mut">${dayName(d)}</span></div><span class="chip no">manca</span></div>`; }).join('')}</div></section>` : ''}
+  ${todayS.length ? `<section class="box"><div class="bh"><div><h3 class="pn">Inviate oggi</h3><div class="meta">Si potranno confermare da domani</div></div></div><div class="bb">${todayS.map(x => row(x, false)).join('')}</div></section>` : ''}
+  <section class="box"><div class="bh"><div><h3 class="pn">Confermate</h3><div class="meta" style="text-transform:capitalize">${label}</div></div><div class="bt"><button class="btn sm sec" data-act="csvcc">Esporta CSV</button></div></div>
+  <div class="bb">${done.map(x => row(x, false)).join('') || '<div class="mut" style="padding:8px 0">Nessuna tabella confermata in questo mese.</div>'}</div></section>`;
+}
+/* ----- analisi ----- */
+function ownerAnalysis() {
+  const now = nowMs(), [from, to] = rangeOf(), today = S.o.today || dstr(nowMs());
+  const all = periodSegs(), work = all.filter(s => s.kind === 'work' && s.jobId);
+  const names = { m1: 'Questo mese', m3: 'Ultimi 3 mesi', m6: 'Ultimi 6 mesi', y: 'Ultimo anno' };
+  // per tipo di lavoro
+  const T = {};
+  for (const s of work) { const k = s.wt || '-', ms = Math.max(0, (s.end || now) - s.start), t = T[k] ??= { ms: 0, jobs: new Set(), w: {} }, w = t.w[s.wid] ??= { ms: 0, jobs: new Set() }; t.ms += ms; t.jobs.add(s.jobId); w.ms += ms; w.jobs.add(s.jobId); }
+  const tkeys = Object.keys(T).sort((a, b) => T[b].ms - T[a].ms);
+  const typeBoxes = tkeys.map(k => {
+    const t = T[k], ws = Object.entries(t.w).sort((a, b) => b[1].ms / b[1].jobs.size - a[1].ms / a[1].jobs.size);
+    const sumJ = ws.reduce((a, [, w]) => a + w.jobs.size, 0), team = sumJ ? t.ms / sumJ : 0;
+    return `<section class="box"><div class="bh"><div><h3 class="pn">${k === '-' ? 'Tipo non indicato' : esc(wtName(k))}</h3><div class="meta">${t.jobs.size} lavori · ${hhmm(t.ms)} in totale</div></div><div class="bt"><b>${hhmm(t.ms / t.jobs.size)}</b><small>tempo medio per lavoro</small></div></div>
+    <div class="bb">${ws.map(([wid, w]) => { const avg = w.ms / w.jobs.size, d = team && ws.length > 1 && w.jobs.size >= 2 ? Math.round((avg / team - 1) * 100) : null;
+      return `<div class="jr"><div class="jm"><b>${esc((W(wid) || {}).name || '?')}</b> <span class="mut">${w.jobs.size} ${w.jobs.size === 1 ? 'lavoro' : 'lavori'}</span></div><div class="jh"><b>${hhmm(avg)}</b>${d === null ? '<span class="otl">—</span>' : `<span class="dl ${d <= -8 ? 'fast' : d >= 8 ? 'slow' : ''}">${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d)}% vs media</span>`}</div></div>`; }).join('')}</div></section>`;
+  }).join('');
+  // ore per commessa (tabelle)
+  const subs = S.o.subs.filter(x => x.day >= from && x.day <= to), C = {};
+  subs.forEach(x => x.entries.forEach(e => { const c = C[e.cc] ??= { m: 0, conf: 0, w: {} }; c.m += e.minutes; if (x.confirmed_at) c.conf += e.minutes; c.w[x.worker_id] = (c.w[x.worker_id] || 0) + e.minutes; }));
+  const ckeys = Object.keys(C).sort((a, b) => C[b].m - C[a].m), cmax = ckeys.length ? C[ckeys[0]].m : 1, ctot = ckeys.reduce((a, k) => a + C[k].m, 0);
+  // persone
+  const P = {};
+  for (const s of all) { const p = P[s.wid] ??= { w: 0, b: 0, ot: 0, days: new Set(), tdays: 0 }; const ms = Math.max(0, (s.end || now) - s.start); if (s.kind === 'break') p.b += ms; else { p.w += ms; p.ot += otMs(s, now); p.days.add(dstr(s.start)); } }
+  const sk = new Set(subs.map(subKey));
+  Object.entries(P).forEach(([wid, p]) => { p.tm = subs.filter(x => x.worker_id === wid).reduce((a, x) => a + subMin(x), 0); p.tdays = [...p.days].filter(d => sk.has(wid + '|' + d)).length; p.miss = [...p.days].filter(d => d < today && !sk.has(wid + '|' + d)).length;
+    p.timerOn = Math.round(all.filter(s => s.wid === wid && s.kind === 'work' && sk.has(wid + '|' + dstr(s.start))).reduce((a, s) => a + Math.max(0, (s.end || now) - s.start), 0) / 60000); });
+  const pk = Object.keys(P).sort((a, b) => byName(W(a) || {}, W(b) || {}));
+  // lavori piu' lunghi
+  const J2 = aggJobs(all), top = Object.entries(J2).filter(([k]) => k !== 'none').sort((a, b) => b[1].ms - a[1].ms).slice(0, 8);
+  const avgJob = Object.keys(J2).length ? Object.values(J2).reduce((a, x) => a + x.ms, 0) / Object.keys(J2).filter(k => k !== 'none').length : 0;
+  return `<div class="card noprint"><div class="seggroup">${Object.entries(names).map(([k, l]) => `<button data-act="an" data-v="${k}" aria-pressed="${S.an === k}">${l}</button>`).join('')}</div>
+  <p class="note" style="margin:10px 0 0">Periodo: ${itDate(from)} – ${itDate(to)}. I tempi sono quelli dei timer, divisi per tipo di lavoro scelto all'avvio.</p></div>
+  <div class="kpis">${kpi('Ore lavorate', hhmm(Object.values(P).reduce((a, p) => a + p.w, 0)))}${kpi('Lavori seguiti', new Set(work.map(s => s.jobId)).size)}${kpi('Tempo medio per lavoro', hhmm(top.length ? avgJob : 0), 'ore su ciascun lavoro')}${kpi('Ore in tabella', fmtM(ctot))}</div>
+  <h2 class="rtitle">Efficienza per tipo di lavoro</h2>
+  ${typeBoxes || '<div class="empty">Nessun lavoro nel periodo.</div>'}
+  ${typeBoxes ? '<p class="note">La percentuale confronta il tempo medio della persona con la media dell\'officina per lo stesso tipo (compare solo con almeno 2 lavori): verde = più veloce, arancio = più lento. Servono molti lavori per un dato affidabile, e conta quanto i lavori sono simili tra loro.</p>' : ''}
+  <h2 class="rtitle">Ore per commessa</h2>
+  <section class="box"><div class="bb">${ckeys.map(k => { const c = C[k], cc = S.o.cc.find(x => x.id === k); return `<div class="barrow"><div class="bl"><span>${esc(ccLabel(cc))}</span><b>${fmtM(c.m)}</b></div><div class="pbar"><i style="width:${Math.max(2, Math.round(c.m / cmax * 100))}%"></i></div>
+    <div class="hl">${Object.entries(c.w).sort((a, b) => b[1] - a[1]).map(([w, m]) => `<span>${esc((W(w) || {}).name || '?')} <b>${fmtM(m)}</b></span>`).join('')}${c.conf < c.m ? `<span class="mut">da confermare ${fmtM(c.m - c.conf)}</span>` : ''}</div></div>`; }).join('') || '<div class="mut" style="padding:8px 0">Nessuna tabella nel periodo.</div>'}</div></section>
+  <h2 class="rtitle">Persone</h2>
+  ${pk.map(w => { const p = P[w], dd = p.tm - p.timerOn; return `<section class="box"><div class="bh"><div><h3 class="pn">${esc((W(w) || {}).name || '?')}</h3><div class="meta">${p.days.size} giorni con timer${p.miss ? ` · <span class="warnt">${p.miss} senza tabella</span>` : ''}</div></div><div class="bt"><b>${hhmm(p.w)}</b><small>ore lavorate</small></div></div>
+    <div class="stats">${kpi('Media al giorno', p.days.size ? hhmm(p.w / p.days.size) : '—')}${kpi('Straordinario', hhmm(p.ot))}${kpi('Pause', hhmm(p.b))}${kpi('Tabella ore', fmtM(p.tm), p.tdays && Math.abs(dd) >= 30 ? (dd > 0 ? '+' : '−') + fmtM(Math.abs(dd)) + ' vs timer' : p.tdays ? 'in linea col timer' : '')}</div></section>`; }).join('') || '<div class="empty">Nessun dato.</div>'}
+  <h2 class="rtitle">Lavori che hanno richiesto più ore</h2>
+  <section class="box"><div class="bb">${top.map(([jid, a]) => `<div class="jr"><div class="jm">${jobHead(J(jid))}</div><div class="jh"><b>${hhmm(a.ms)}</b></div>${Object.keys(a.types).some(k => k !== '-') ? `<div class="jx">${typeChips(a.types)}</div>` : ''}</div>`).join('') || '<div class="mut" style="padding:8px 0">Nessun lavoro nel periodo.</div>'}</div></section>`;
 }
 function draftForm() {
   const d = S.draft, fld = (k, label, ph, attrs) => `<div><label for="d_${k}">${label}</label><input id="d_${k}" data-live="dr" data-f="${k}" value="${esc(d[k])}" placeholder="${ph}" autocomplete="off" ${attrs || ''}></div>`;
@@ -417,7 +587,8 @@ function schedDraft() {
     days[i] = x.length ? { on: true, af: x[0][0], at: x[0][1], bf: x[1] ? x[1][0] : '', bt: x[1] ? x[1][1] : '' }
                        : { on: !c && i <= 5, af: '08:00', at: '12:00', bf: '14:00', bt: '18:00' };
   }
-  return { en: !!(c && c.enabled), days };
+  const hv = c && Object.prototype.hasOwnProperty.call(c, 'hard_stop') ? c.hard_stop : '19:00', rv = c && Object.prototype.hasOwnProperty.call(c, 'reminder') ? c.reminder : '17:50';
+  return { en: !!(c && c.enabled), days, hs: hv, rm: rv };
 }
 function schedCard() {
   const d = S.sch ??= schedDraft();
@@ -429,6 +600,8 @@ function schedCard() {
     <div class="slot"><span>Mattina</span>${t('af', 'mattina, inizio', x.af)}<i aria-hidden="true">–</i>${t('at', 'mattina, fine', x.at)}</div>
     <div class="slot"><span>Pomeriggio</span>${t('bf', 'pomeriggio, inizio', x.bf)}<i aria-hidden="true">–</i>${t('bt', 'pomeriggio, fine', x.bt)}</div></div>`; }).join('')}
   <p class="note">Per un orario continuato (senza pausa pranzo) lascia vuoto il pomeriggio: cancella i due orari.</p>
+  <div class="row" style="margin-top:10px"><div><label for="s_hs">Stop di tutti i timer alle</label><input id="s_hs" type="time" data-live="sch" data-f="hs" value="${esc(d.hs)}"></div><div><label for="s_rm">Promemoria ore commesse alle</label><input id="s_rm" type="time" data-live="sch" data-f="rm" value="${esc(d.rm)}"></div></div>
+  <p class="note">Allo stop (di norma 19:00) si fermano da soli anche i timer in straordinario, e dopo quell'ora non se ne possono avviare altri. Il promemoria arriva una volta al giorno agli operai che hanno usato i timer e non hanno ancora compilato la tabella. Lascia vuoto per non usarli.</p>
   <div class="btns one" style="margin-top:12px"><button class="btn" data-act="savesched">Salva orario</button></div></div>`;
 }
 function ownerPeople() {
@@ -438,6 +611,14 @@ function ownerPeople() {
   <div class="acts"><input id="pp_${w.id}" type="password" inputmode="numeric" maxlength="6" placeholder="Nuovo PIN" aria-label="Nuovo PIN per ${esc(w.name)}"><button class="btn sec sm" data-act="setpin" data-id="${w.id}">Cambia PIN</button><button class="btn sec sm" data-act="togw" data-id="${w.id}">${w.active ? 'Disattiva' : 'Riattiva'}</button></div></div>`).join('') : '<div class="empty" style="margin-top:12px">Nessun operaio inserito.</div>'}</div>
   <div class="card"><h2>Mezzi soccorso stradale</h2><div class="row"><div><label for="nv">Nome mezzo</label><input id="nv" placeholder="es. Carro attrezzi 2"></div><button class="btn" data-act="addv">Aggiungi</button></div>
   ${S.vehicles.map(v => `<div class="item"><span>${esc(v)}</span><button class="btn del" data-act="delv" data-v="${esc(v)}">Elimina</button></div>`).join('')}</div>
+  <div class="card"><h2>Commesse (tabella ore)</h2><p class="note" style="margin-top:0">Gli operai indicano a fine giornata le ore su ciascuna commessa attiva.</p>
+  <div class="row"><div style="flex:0 1 130px"><label for="ncc_c">Codice</label><input id="ncc_c" placeholder="es. 20508" autocomplete="off"></div><div style="flex:2 1 200px"><label for="ncc_n">Nome</label><input id="ncc_n" placeholder="es. Gommista" autocomplete="off"></div><button class="btn" data-act="addcc">Aggiungi</button></div>
+  ${S.o.cc.map(c => `<div class="item cfg ${c.active ? '' : 'off'}"><div class="cf"><input id="cc_c_${c.id}" value="${esc(c.code)}" aria-label="Codice" style="max-width:110px"><input id="cc_n_${c.id}" value="${esc(c.name)}" aria-label="Nome"></div>
+  <div class="acts">${c.active ? '' : '<span class="tag">disattivata</span>'}<button class="btn sec sm" data-act="savecc" data-id="${c.id}">Salva</button><button class="btn sec sm" data-act="togcc" data-id="${c.id}">${c.active ? 'Disattiva' : 'Riattiva'}</button><button class="btn del" data-act="delcc" data-id="${c.id}">${S.confirm === 'cc:' + c.id ? 'Conferma' : 'Elimina'}</button></div></div>`).join('')}</div>
+  <div class="card"><h2>Tipi di lavoro</h2><p class="note" style="margin-top:0">Si sceglie dal menù a tendina quando l'operaio avvia il timer. Servono per i report di efficienza.</p>
+  <div class="row"><div style="flex:2 1 200px"><label for="nwt">Nuovo tipo</label><input id="nwt" placeholder="es. Diagnosi" autocomplete="off"></div><button class="btn" data-act="addwt">Aggiungi</button></div>
+  ${S.o.wt.map(t => `<div class="item cfg ${t.active ? '' : 'off'}"><div class="cf"><input id="wt_n_${t.id}" value="${esc(t.name)}" aria-label="Nome"></div>
+  <div class="acts">${t.active ? '' : '<span class="tag">disattivato</span>'}<button class="btn sec sm" data-act="savewt" data-id="${t.id}">Salva</button><button class="btn sec sm" data-act="togwt" data-id="${t.id}">${t.active ? 'Disattiva' : 'Riattiva'}</button><button class="btn del" data-act="delwt" data-id="${t.id}">${S.confirm === 'wt:' + t.id ? 'Conferma' : 'Elimina'}</button></div></div>`).join('')}</div>
   ${schedCard()}
   <div class="card"><h2>PIN del titolare</h2><div class="row"><div><label for="opn">Nuovo PIN (4–6 cifre)</label><input id="opn" type="password" inputmode="numeric" maxlength="6" autocomplete="off"></div><button class="btn sec" data-act="setowner">Cambia PIN</button></div></div>`;
 }
@@ -454,13 +635,23 @@ const act = {
   del() { S.login.pin = S.login.pin.slice(0, -1); render(); },
   go() { submitPin(); },
   logout() { logout(); },
-  tab(b) { S.tab = b.dataset.t; S.confirm = ''; render(); },
+  tab(b) { S.tab = b.dataset.t; S.confirm = ''; render(); if (S.role === 'owner' && ['analysis', 'confirm', 'report'].includes(S.tab)) refresh(); },
   /* timer */
   pick(b) { S.sel = S.sel === b.dataset.id ? '' : b.dataset.id; render(); },
-  start() { if (!S.sel || S.segs.some(s => !s.end)) return; const jid = S.sel; S.sel = ''; S.jq = ''; act2('w_start', { p_kind: 'work', p_job: jid, p_overtime: schedOn() && !inHours(nowMs()) }); },
+  start() { if (!S.sel || S.segs.some(s => !s.end)) return; const jid = S.sel; S.sel = ''; S.jq = ''; const jb = J(jid), ty = jb && jb.type !== 'gen' ? S.typeSel || null : null; S.typeSel = ''; act2('w_start', { p_kind: 'work', p_job: jid, p_overtime: schedOn() && !inHours(nowMs()), p_type: ty }); },
   async startot(b) {
-    const ok = await act2('w_start', { p_kind: 'work', p_job: b.dataset.job, p_overtime: true });
+    const last = [...S.segs].reverse().find(x => x.jobId === b.dataset.job && x.wt), ok = await act2('w_start', { p_kind: 'work', p_job: b.dataset.job, p_overtime: true, p_type: last ? last.wt : null });
     if (ok) { S.alerts = S.alerts.filter(a => a.id !== b.dataset.id); render(); call('w_ack_alert', { p_id: b.dataset.id }).catch(() => {}); }
+  },
+  gohours(b) { S.tab = 'hours'; S.tbl = null; if (b.dataset.id) { S.alerts = S.alerts.filter(a => a.id !== b.dataset.id); call('w_ack_alert', { p_id: b.dataset.id }).catch(() => {}); } render(); },
+  goday(b) { S.tbl = { day: b.dataset.d, init: '', vals: {} }; render(); },
+  async saveday() {
+    const T = tblGet(), items = []; let tot = 0;
+    for (const [cc, v] of Object.entries(T.vals)) { const m = parseH(v); if (Number.isNaN(m)) { toast('Ore non valide: scrivi per esempio 1:30 oppure 1,5'); return; } if (m > 0) { items.push({ cc, m }); tot += m; } }
+    if (!items.length) { toast('Inserisci le ore di almeno una commessa'); return; }
+    if (tot > 1440) { toast('Il totale supera le 24 ore'); return; }
+    const ok = await act2('w_save_day', { p_day: T.day, p_entries: JSON.stringify(items) });
+    if (ok) { S.tbl = null; toast('Ore inviate: ' + fmtM(tot)); render(); }
   },
   ackalert(b) { S.alerts = S.alerts.filter(a => a.id !== b.dataset.id); render(); act2('w_ack_alert', { p_id: b.dataset.id }); },
   async pushon() {
@@ -480,7 +671,7 @@ const act = {
       S.pushOn = false; render();
     } catch (e) { toast(e.message); }
   },
-  startbreak() { if (S.segs.some(s => !s.end) || (schedOn() && !inHours(nowMs()))) return; act2('w_start', { p_kind: 'break', p_job: null }); },
+  startbreak() { if (S.segs.some(s => !s.end) || (schedOn() && !inHours(nowMs())) || pastHard()) return; act2('w_start', { p_kind: 'break', p_job: null }); },
   pause() { act2('w_pause', {}); },
   resume() { act2('w_resume', {}); },
   stop() { act2('w_stop', {}); },
@@ -490,16 +681,40 @@ const act = {
     s.rescues = on ? [...s.rescues, v] : s.rescues.filter(x => x !== v); render();
     act2('w_set_rescue', { p_seg: s.id, p_vehicle: v, p_on: on });
   },
+  /* ore per commessa (titolare) */
+  an(b) { S.an = b.dataset.v; render(); refresh(); },
+  confirm1(b) { act2('o_confirm_days', { p_items: JSON.stringify([{ w: b.dataset.w, d: b.dataset.d }]) }).then(ok => { if (ok) toast('Confermato'); }); },
+  reopen(b) { act2('o_reopen_day', { p_worker: b.dataset.w, p_day: b.dataset.d }).then(ok => { if (ok) toast('Giornata riaperta: l\'operaio può correggere'); }); },
+  selall() { const today = S.o.today || dstr(nowMs()), list = S.o.subs.filter(x => !x.confirmed_at && x.day < today), all = list.every(x => S.csel[subKey(x)]); list.forEach(x => { S.csel[subKey(x)] = !all; }); render(); },
+  confsel() {
+    const today = S.o.today || dstr(nowMs()), items = S.o.subs.filter(x => !x.confirmed_at && x.day < today && S.csel[subKey(x)]).map(x => ({ w: x.worker_id, d: x.day }));
+    if (!items.length) return; S.csel = {};
+    act2('o_confirm_days', { p_items: JSON.stringify(items) }).then(ok => { if (ok) toast(items.length + (items.length === 1 ? ' tabella confermata' : ' tabelle confermate')); });
+  },
+  csvcc() {
+    const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"', [from, to] = rangeOf(), rows = [['Data', 'Operaio', 'Codice commessa', 'Commessa', 'Ore decimali', 'Stato']];
+    [...S.o.subs].filter(x => x.day >= from && x.day <= to).sort((a, b) => a.day < b.day ? -1 : 1).forEach(x => x.entries.forEach(e => { const c = S.o.cc.find(k => k.id === e.cc) || {}; rows.push([x.day, (W(x.worker_id) || {}).name || '', c.code || '', c.name || '', (Math.round(e.minutes / 6) / 10).toString().replace('.', ','), x.confirmed_at ? 'Confermato' : 'Da confermare']); }));
+    const blob = new Blob(['\ufeff' + rows.map(r => r.map(q).join(';')).join('\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ore-commesse-' + S.rep.month + '.csv'; document.body.append(a); a.click(); a.remove();
+  },
+  addcc() { const c = $('#ncc_c').value.trim(), n = $('#ncc_n').value.trim(); if (!c || !n) { toast('Inserisci codice e nome'); return; } act2('o_save_cost_center', { p_id: null, p_code: c, p_name: n, p_active: true }).then(ok => { if (ok) toast('Commessa aggiunta'); }); },
+  savecc(b) { const c = get(S.o.cc, b.dataset.id); if (c) act2('o_save_cost_center', { p_id: c.id, p_code: $('#cc_c_' + c.id).value, p_name: $('#cc_n_' + c.id).value, p_active: c.active }).then(ok => { if (ok) toast('Salvato'); }); },
+  togcc(b) { const c = get(S.o.cc, b.dataset.id); if (c) act2('o_save_cost_center', { p_id: c.id, p_code: c.code, p_name: c.name, p_active: !c.active }); },
+  delcc(b) { const key = 'cc:' + b.dataset.id; if (S.confirm !== key) { S.confirm = key; render(); return; } S.confirm = ''; act2('o_delete_cost_center', { p_id: b.dataset.id }); },
+  addwt() { const n = $('#nwt').value.trim(); if (!n) { toast('Inserisci il nome'); return; } act2('o_save_work_type', { p_id: null, p_name: n, p_active: true }).then(ok => { if (ok) toast('Tipo aggiunto'); }); },
+  savewt(b) { const t = get(S.o.wt, b.dataset.id); if (t) act2('o_save_work_type', { p_id: t.id, p_name: $('#wt_n_' + t.id).value, p_active: t.active }).then(ok => { if (ok) toast('Salvato'); }); },
+  togwt(b) { const t = get(S.o.wt, b.dataset.id); if (t) act2('o_save_work_type', { p_id: t.id, p_name: t.name, p_active: !t.active }); },
+  delwt(b) { const key = 'wt:' + b.dataset.id; if (S.confirm !== key) { S.confirm = key; render(); return; } S.confirm = ''; act2('o_delete_work_type', { p_id: b.dataset.id }); },
   /* report */
   rmode(b) { S.rep.mode = b.dataset.v; render(); refresh(); },
   rby(b) { S.rep.by = b.dataset.v; render(); },
   print() { window.print(); },
   csv() {
     const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"', now = nowMs();
-    const rows = [['Data', 'Operaio', 'Tipo', 'Codice', 'Targa', 'Descrizione', 'Inizio', 'Fine', 'Ore decimali', 'Straordinario', 'Ricambi', 'Note', 'Soccorso (mezzi)']];
+    const rows = [['Data', 'Operaio', 'Tipo', 'Codice', 'Targa', 'Descrizione', 'Tipo di lavoro', 'Inizio', 'Fine', 'Ore decimali', 'Ore straordinario', 'Ricambi', 'Note', 'Soccorso (mezzi)']];
     [...periodSegs()].sort((a, b) => a.start - b.start).forEach(s => {
       const j = J(s.jobId) || {};
-      rows.push([dstr(s.start), (W(s.wid) || {}).name || '', s.kind === 'break' ? 'Pausa' : 'Lavoro', j.code || '', j.plate || '', j.desc || '', hm(s.start), s.end ? hm(s.end) : '', dec((s.end || now) - s.start), s.ot && s.kind === 'work' ? 'Sì' : '', (s.parts || '').replace(/\n/g, ' | '), s.note || '', s.rescues.join(' | ')]);
+      rows.push([dstr(s.start), (W(s.wid) || {}).name || '', s.kind === 'break' ? 'Pausa' : 'Lavoro', j.code || '', j.plate || '', j.desc || '', s.kind === 'work' ? wtName(s.wt) : '', hm(s.start), s.end ? hm(s.end) : '', dec((s.end || now) - s.start), otMs(s, now) ? dec(otMs(s, now)) : '', (s.parts || '').replace(/\n/g, ' | '), s.note || '', s.rescues.join(' | ')]);
     });
     const blob = new Blob(['﻿' + rows.map(r => r.map(q).join(';')).join('\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'report-ore-' + (S.rep.mode === 'day' ? S.rep.date : S.rep.month) + '.csv'; document.body.append(a); a.click(); a.remove();
@@ -513,7 +728,7 @@ const act = {
     if (!s || !e) { toast('Inserisci inizio e fine'); return; }
     if (kind === 'work' && !job) { toast('Scegli il lavoro'); return; }
     const st = at(d, s); let en = at(d, e); if (en <= st) en += 864e5;
-    act2('o_add_segment', { p_worker: w, p_job: kind === 'work' ? job : null, p_kind: kind, p_start: iso(st), p_end: iso(en), p_overtime: kind === 'work' && $('#ao_' + w).value === '1' });
+    act2('o_add_segment', { p_worker: w, p_job: kind === 'work' ? job : null, p_kind: kind, p_start: iso(st), p_end: iso(en), p_overtime: kind === 'work' && $('#ao_' + w).value === '1', p_type: kind === 'work' ? $('#at_' + w).value || null : null });
   },
   /* lavori */
   scanw() {
@@ -589,7 +804,8 @@ const act = {
       }
       days[i] = sl;
     }
-    act2('o_set_schedule', { p_cfg: JSON.stringify({ enabled: d.en, days }) }).then(ok => { if (ok) { S.sch = null; toast('Orario salvato'); render(); } });
+    if (d.hs && !(d.hs >= '00:00')) d.hs = '';
+    act2('o_set_schedule', { p_cfg: JSON.stringify({ enabled: d.en, days, hard_stop: d.hs || '', reminder: d.rm || '' }) }).then(ok => { if (ok) { S.sch = null; toast('Orario salvato'); render(); } });
   },
   setowner() { const p = $('#opn').value; if (!pinOk(p)) { toast('Il PIN deve avere da 4 a 6 cifre'); return; } act2('o_set_owner_pin', { p_pin: p }).then(ok => { if (ok) toast('PIN del titolare cambiato'); }); }
 };
@@ -646,6 +862,11 @@ const chg = {
     if (!t.checked && s.rescues.length) { const old = s.rescues; s.rescues = []; render(); Promise.all(old.map(v => call('w_set_rescue', { p_seg: s.id, p_vehicle: v, p_on: false }))).then(refresh).catch(e => toast(e.message)); }
     else render();
   },
+  tday(t) { S.tbl = { day: t.value, init: '', vals: {} }; render(); },
+  wt(t) { S.typeSel = t.value; render(); },
+  wtype(t) { const s = get(S.segs, t.dataset.s); if (s) s.wt = t.value; act2('w_set_type', { p_seg: t.dataset.s, p_type: t.value || null }); },
+  otype(t) { act2('o_set_segment_type', { p_seg: t.dataset.s, p_type: t.value || null }); },
+  csel(t) { S.csel[t.dataset.k] = t.checked; render(); },
   segot(t) { act2('o_set_segment_overtime', { p_seg: t.dataset.s, p_on: t.checked }); },
   rd(t) { S.rep.date = t.value || dstr(Date.now()); dirty = false; render(); refresh(); },
   rm(t) { S.rep.month = t.value || dstr(Date.now()).slice(0, 7); dirty = false; render(); refresh(); },
@@ -661,10 +882,12 @@ const live = {
   sch(t) {
     const d = S.sch ??= schedDraft(), f = t.dataset.f; let m;
     if (f === 'en') d.en = t.checked;
+    else if (f === 'hs' || f === 'rm') d[f] = t.value;
     else if ((m = /^on(\d)$/.exec(f))) { d.days[m[1]].on = t.checked; render(); }
     else if ((m = /^(af|at|bf|bt)(\d)$/.exec(f))) d.days[m[2]][m[1]] = t.value;
   },
   dr(t) { S.draft[t.dataset.f] = t.value; },
+  tb(t) { tblGet().vals[t.dataset.c] = t.value; const e = $('#tbltot'); if (e) e.innerHTML = tblTotalHtml(); },
   jq(t) { S.jq = t.value; const l = $('#joblist'); if (l) l.innerHTML = jobListHtml(); },
   jf(t) { S.jf = t.value; const l = $('#jobsadmin'); if (l) l.innerHTML = jobsAdminList(); }
 };
