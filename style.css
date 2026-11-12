@@ -249,3 +249,39 @@ select.tsel{width:100%}
 @media print{.box{break-inside:avoid}}
 .hrow input::placeholder{color:var(--mut);opacity:.45;font-weight:400}
 .warn .linkb{display:inline;padding:0;font-size:inherit;min-height:0}
+
+/* ---------- avvia sotto al lavoro, calendario presenze ---------- */
+.startbox{margin:-2px 0 10px;padding:12px;border:2px solid var(--acc);border-top:0;border-radius:0 0 10px 10px;background:var(--soft)}
+.startbox .btn{width:100%;margin-top:12px}
+.startbox label{margin-top:4px}
+.pick button[aria-pressed=true]{border-radius:10px 10px 0 0}
+.dayrow{display:flex;gap:8px;align-items:stretch}
+.dayrow input{flex:1 1 auto;min-width:0}
+.dayrow .btn{flex:0 0 52px;font-size:26px;padding:0}
+.monthnav{display:flex;gap:6px;align-items:center}
+.monthnav .btn{flex:0 0 44px;font-size:22px;padding:0}
+.legend{display:flex;gap:6px 14px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--mut)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.lg{display:inline-block;width:14px;height:14px;border-radius:4px;border:1px solid var(--line)}
+.lg.pr,.cc.pr{background:#e1f2e6;color:#1d5a30}
+.lg.unc{background:var(--card,#fff);box-shadow:inset -5px -5px 0 -1px var(--amber)}
+.lg.ab-ferie,.cc.ab-ferie,.chip.ab-ferie{background:#dbeafb;color:#174a86;border-color:#9bbfe8}
+.lg.ab-permesso,.cc.ab-permesso,.chip.ab-permesso{background:#efe2fa;color:#5a2a86;border-color:#c9a9e6}
+.lg.ab-malattia,.cc.ab-malattia,.chip.ab-malattia{background:#fde4e1;color:#8a1f13;border-color:#ee9d95}
+.calwrap{overflow-x:auto;border:1.5px solid var(--line);border-radius:12px;background:var(--card,#fff);margin:0 0 16px;-webkit-overflow-scrolling:touch}
+table.cal{border-collapse:separate;border-spacing:0;min-width:100%;font-variant-numeric:tabular-nums}
+table.cal th,table.cal td{border-right:1px solid var(--line);border-bottom:1px solid var(--line);text-align:center;padding:0}
+table.cal thead th{font:600 13px var(--f-body);padding:5px 0;min-width:32px;background:var(--soft)}
+table.cal thead th span{display:block;font-size:10px;color:var(--mut)}
+table.cal th.nm{position:sticky;left:0;z-index:2;background:var(--soft);text-align:left;padding:0 8px;min-width:104px;max-width:104px;font:600 14px var(--f-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-right:2px solid var(--line)}
+table.cal th.cl,table.cal td.cl{background-image:linear-gradient(rgba(120,130,140,.12),rgba(120,130,140,.12))}
+table.cal th.tdy{box-shadow:inset 0 -3px 0 var(--acc)}
+td.cc{height:38px;min-width:32px;font:600 13px var(--f-body);cursor:pointer;position:relative;color:var(--mut)}
+td.cc small{display:block;font-size:9px;line-height:1}
+td.cc.pr{font-weight:700}
+td.cc.tb{color:var(--mut);font-style:italic}
+td.cc.unc::after{content:"";position:absolute;right:2px;bottom:2px;width:7px;height:7px;border-radius:50%;background:var(--amber)}
+td.cc.tdy{box-shadow:inset 2px 0 0 var(--acc),inset -2px 0 0 var(--acc)}
+td.cc.sel{outline:3px solid var(--acc);outline-offset:-3px}
+.sumk{display:block}
+.chip.ab-ferie,.chip.ab-permesso,.chip.ab-malattia{border-width:1.5px}

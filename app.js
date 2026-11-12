@@ -22,11 +22,11 @@ const S = {
   role: null, token: '', wid: '', name: '', tab: 'timer',
   login: { mode: 'pick', wid: '', pin: '', err: '', busy: false },
   jobs: [], vehicles: [], busy: [], segs: [],      // operaio
-  o: { workers: [], segs: [], subs: [], wt: [], cc: [], today: '' },   // titolare
+  o: { workers: [], segs: [], subs: [], abs: [], wt: [], cc: [], today: '' },   // titolare
   sel: '', jq: '', jf: '', confirm: '', rescueOpen: {},
   draft: null, openJob: '', files: {},
   sched: null, sch: null, alerts: [], pushReady: false, pushOn: false, open: {},
-  wt: [], cc: [], days: [], today: '', hard: '', typeSel: '', tbl: null, csel: {}, an: 'm3',
+  wt: [], cc: [], days: [], abs: [], today: '', hard: '', typeSel: '', tbl: null, csel: {}, an: 'm3', cv: 'list', cal: null, abf: null,
   rep: { mode: 'day', date: dstr(Date.now()), month: dstr(Date.now()).slice(0, 7), by: 'person' }
 };
 const nowMs = () => Date.now() + S.off;
@@ -69,6 +69,7 @@ function refreshPush() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
   navigator.serviceWorker.ready.then(r => r.pushManager.getSubscription()).then(sub => { S.pushOn = !!sub; softRender(); }).catch(() => {});
 }
+const ABS = { malattia: ['Malattia', 'M'], permesso: ['Permesso', 'P'], ferie: ['Ferie', 'F'] };
 const wtName = id => ((S.o.wt.find(t => t.id === id) || S.wt.find(t => t.id === id)) || {}).name || '';
 const ccLabel = c => c ? `${c.code} ${c.name}` : '?';
 const fmtM = m => Math.floor(m / 60) + ':' + pad(m % 60);                      // minuti -> h:mm
@@ -127,13 +128,13 @@ async function refresh() {
       S.off = Date.parse(r.now) - Date.now();
       S.jobs = r.jobs.map(normJob); S.vehicles = r.vehicles; S.o.workers = r.workers;
       S.o.segs = r.segments.map(normSeg); S.sched = r.schedule;
-      S.o.subs = r.subs || []; S.o.wt = r.work_types || []; S.o.cc = r.cost_centers || []; S.o.today = r.today || ''; S.hard = r.hard_stop || '';
+      S.o.subs = r.subs || []; S.o.abs = r.absences || []; S.o.wt = r.work_types || []; S.o.cc = r.cost_centers || []; S.o.today = r.today || ''; S.hard = r.hard_stop || '';
     } else {
       const r = await call('w_state', {});
       S.off = Date.parse(r.now) - Date.now();
       S.jobs = r.jobs.map(normJob); S.vehicles = r.vehicles; S.busy = r.busy || [];
       S.segs = r.segments.map(normSeg); S.sched = r.schedule; S.alerts = r.alerts || []; S.pushReady = !!r.push_ready;
-      S.wt = r.work_types || []; S.cc = r.cost_centers || []; S.days = r.days || []; S.today = r.today || dstr(nowMs()); S.hard = r.hard_stop || '';
+      S.wt = r.work_types || []; S.cc = r.cost_centers || []; S.days = r.days || []; S.abs = r.absences || []; S.today = r.today || dstr(nowMs()); S.hard = r.hard_stop || '';
     }
     S.offline = false;
   } catch (e) { if (e.expired) return; S.offline = true; }
@@ -164,8 +165,8 @@ async function submitPin() {
 }
 function logout() {
   if (S.token) rpc('logout', { p_token: S.token }).catch(() => {});
-  Object.assign(S, { token: '', role: null, wid: '', name: '', jobs: [], segs: [], busy: [], sel: '', confirm: '', rescueOpen: {}, draft: emptyDraft(), openJob: '', files: {}, sched: null, sch: null, alerts: [], pushReady: false, pushOn: false, open: {}, wt: [], cc: [], days: [], today: '', hard: '', typeSel: '', tbl: null, csel: {} });
-  S.o = { workers: [], segs: [], subs: [], wt: [], cc: [], today: '' };
+  Object.assign(S, { token: '', role: null, wid: '', name: '', jobs: [], segs: [], busy: [], sel: '', confirm: '', rescueOpen: {}, draft: emptyDraft(), openJob: '', files: {}, sched: null, sch: null, alerts: [], pushReady: false, pushOn: false, open: {}, wt: [], cc: [], days: [], abs: [], today: '', hard: '', typeSel: '', tbl: null, csel: {}, cal: null, abf: null });
+  S.o = { workers: [], segs: [], subs: [], abs: [], wt: [], cc: [], today: '' };
   S.login = { mode: 'pick', wid: '', pin: '', err: '', busy: false };
   loadWorkers();
 }
@@ -235,11 +236,17 @@ function jobListHtml() {
   const used = new Set(todaySegs().map(s => s.jobId));
   let list = S.jobs.filter(j => j.open && (!q || [j.code, j.plate, j.barcode, j.desc].some(x => x && String(x).toLowerCase().includes(q))));
   list = [...list].sort((a, b) => (used.has(b.id) ? 1 : 0) - (used.has(a.id) ? 1 : 0));
+  const cur = J(S.sel); if (cur && !list.some(j => j.id === cur.id)) list.unshift(cur);   // il lavoro scelto resta sempre visibile
   if (!list.length) return `<div class="empty">${q ? 'Nessun lavoro corrisponde alla ricerca.' : 'Nessun lavoro aperto. Il titolare li inserisce da Lavori.'}</div>`;
   return list.slice(0, 40).map(j => {
     const others = S.busy.filter(b => b.job_id === j.id && b.worker_id !== S.wid).map(b => b.name);
-    return `<button data-act="pick" data-id="${j.id}" aria-pressed="${S.sel === j.id}">${jobHead(j)}${others.length ? `<div class="note">Già in lavorazione: ${esc(others.join(', '))}</div>` : ''}</button>`;
+    return `<button data-act="pick" data-id="${j.id}" aria-pressed="${S.sel === j.id}">${jobHead(j)}${others.length ? `<div class="note">Già in lavorazione: ${esc(others.join(', '))}</div>` : ''}</button>${S.sel === j.id ? startPanel(j) : ''}`;
   }).join('');
+}
+function startPanel(j) {                       // tipo di lavoro e Avvia, subito sotto al lavoro scelto
+  const out = schedOn() && !inHours(nowMs()), needT = j.type !== 'gen' && S.wt.length;
+  return `<div class="startbox">${jobInfo(j)}${needT ? `<label for="wts">Tipo di lavoro</label><select id="wts" class="tsel" data-in="wt"><option value="">Scegli il tipo…</option>${S.wt.map(t => `<option value="${t.id}" ${S.typeSel === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
+  <button class="btn big ${out ? 'amber' : ''}" data-act="start" ${!needT || S.typeSel ? '' : 'disabled'}>${needT && !S.typeSel ? 'Scegli il tipo di lavoro' : (out ? 'Avvia straordinario' : 'Avvia')}</button></div>`;
 }
 function alertsHtml() {
   const run = S.segs.some(s => !s.end);
@@ -284,14 +291,13 @@ function workerTimer() {
     <div class="clock" data-tick="${run.start}">${hms(now - run.start)}</div>
     <div class="btns ${j ? '' : 'one'}">${j ? '<button class="btn big" data-act="resume">Riprendi</button>' : ''}<button class="btn big stop" data-act="stop">${j ? 'Fine giornata' : 'Fine pausa'}</button></div></section>`;
   } else {
-    const sj = J(S.sel), needT = !!(sj && sj.type !== 'gen' && S.wt.length), ph = pastHard();
+    const ph = pastHard();
     if (ph) main = `<section class="card"><h2>Giornata chiusa</h2><p>Dopo le ${S.hard} i timer non si possono più avviare. Compila ora le ore per commessa.</p><div class="btns one"><button class="btn big" data-act="gohours">Apri la tabella ore</button></div></section>`;
     else main = `<section class="card"><h2>Scegli il lavoro</h2>
     ${out ? `<div class="warn" role="status">${dh ? `Siamo fuori dall'orario dell'officina (${slotTxt(dh)}).` : "Oggi l'officina è chiusa."} Il tempo che avvii ora sarà registrato come <b>straordinario</b>${S.hard ? `; alle ${S.hard} tutti i timer si fermano da soli` : ''}.</div>` : ''}
     <label for="jq">Codice, targa o codice a barre</label><div class="bcrow"><input id="jq" data-live="jq" value="${esc(S.jq)}" placeholder="Digita o scansiona, poi Invio" autocomplete="off"><button class="btn sec" data-act="scanw">Scansiona</button></div>
-    <div class="pick" id="joblist">${jobListHtml()}</div>${jobInfo(sj)}
-    ${needT ? `<div style="margin-top:12px"><label for="wts">Tipo di lavoro</label><select id="wts" class="tsel" data-in="wt"><option value="">Scegli il tipo…</option>${S.wt.map(t => `<option value="${t.id}" ${S.typeSel === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>` : ''}
-    <div class="btns ${out ? 'one' : ''}" style="margin-top:14px"><button class="btn big ${out ? 'amber' : ''}" data-act="start" ${sj && (!needT || S.typeSel) ? '' : 'disabled'}>${!sj ? 'Scegli un lavoro' : needT && !S.typeSel ? 'Scegli il tipo di lavoro' : (out ? 'Avvia straordinario' : 'Avvia')}</button>${out ? '' : '<button class="btn big steel" data-act="startbreak">Pausa</button>'}</div></section>`;
+    <div class="pick" id="joblist">${jobListHtml()}</div>
+    ${out ? '' : '<div class="btns one" style="margin-top:14px"><button class="btn big steel" data-act="startbreak">Pausa</button></div>'}</section>`;
   }
   return alertsHtml() + main + `<div class="sumline"><span>Lavorato oggi <b>${hhmm(t.w)}</b></span>${otSum(t)}<span>Pause <b>${hhmm(t.b)}</b></span></div>`;
 }
@@ -307,7 +313,8 @@ function workerToday() {
 const dayName = d => new Date(d + 'T12:00').toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
 function pendingDays() {          // giorni recenti con lavoro registrato e tabella non ancora inviata
   const have = new Set(S.days.map(d => d.day)), today = S.today || dstr(nowMs());
-  return [...new Set(S.segs.filter(x => x.kind === 'work' && x.end).map(x => dstr(x.start)))].filter(d => d < today && !have.has(d)).sort();
+  const off = new Set(S.abs.filter(a => a.kind !== 'permesso').map(a => a.day));
+  return [...new Set(S.segs.filter(x => x.kind === 'work' && x.end).map(x => dstr(x.start)))].filter(d => d < today && !have.has(d) && !off.has(d)).sort();
 }
 function tblGet() {
   const day = (S.tbl && S.tbl.day) || S.today || dstr(nowMs());
@@ -322,14 +329,16 @@ function tblTotalHtml() {
 function workerHours() {
   const T = tblGet(), sub = S.days.find(d => d.day === T.day), locked = !!(sub && sub.confirmed_at), today = S.today || dstr(nowMs());
   const from = dstr(Date.parse(today + 'T12:00') - 7 * 864e5);
-  const opts = [...new Set([today, ...pendingDays(), ...S.days.filter(d => d.day >= from).map(d => d.day), T.day])].sort().reverse();
+  const min = dstr(Date.parse(today + 'T12:00') - 45 * 864e5), ab = S.abs.find(x => x.day === T.day);
   const list = [...S.cc];
   (sub ? sub.entries : []).forEach(e => { if (!list.some(c => c.id === e.cc)) list.push({ id: e.cc, code: e.code, name: e.name }); });
   const pend = pendingDays().filter(d => d !== T.day);
   return `${pend.length ? `<div class="warn" role="status">Hai ${pend.length === 1 ? 'un giorno' : pend.length + ' giorni'} senza tabella ore: ${pend.map(d => `<button class="linkb" data-act="goday" data-d="${d}">${dayName(d)}</button>`).join(', ')}.</div>` : ''}
   <section class="card"><h2>Ore per commessa</h2>
   <p class="note" style="margin-top:0">A fine giornata scrivi quante ore hai fatto su ogni commessa. Puoi scrivere <b>1:30</b> oppure <b>1,5</b>. Lascia vuote le commesse che non hai fatto.</p>
-  <label for="tday">Giorno</label><select id="tday" data-in="tday">${opts.map(d => `<option value="${d}" ${d === T.day ? 'selected' : ''}>${d === today ? 'Oggi · ' : ''}${dayName(d)}</option>`).join('')}</select>
+  <label for="tday">Giorno</label><div class="dayrow"><button class="btn sec sm" data-act="dayshift" data-v="-1" aria-label="Giorno precedente" ${T.day <= min ? 'disabled' : ''}>‹</button><input id="tday" type="date" data-in="tday" min="${min}" max="${today}" value="${T.day}"><button class="btn sec sm" data-act="dayshift" data-v="1" aria-label="Giorno successivo" ${T.day >= today ? 'disabled' : ''}>›</button></div>
+  <p class="note" style="margin:6px 0 0">${T.day === today ? 'Oggi' : dayName(T.day)} · puoi compilare anche i giorni passati (fino a 45 giorni fa); il titolare poi li conferma.</p>
+  ${ab ? `<div class="warn" role="status">In questo giorno risulti assente: <b>${ABS[ab.kind][0]}</b>${ab.minutes ? ' (' + fmtM(ab.minutes) + ')' : ''}. Compila la tabella solo se hai lavorato.</div>` : ''}
   ${locked ? '<div class="okbox" role="status"><b>Confermato dal titolare.</b> Per correggere chiedi al titolare di riaprire la giornata.</div>' : sub ? `<p class="note">Inviata il ${new Date(sub.submitted_at).toLocaleDateString('it-IT')} alle ${hm(Date.parse(sub.submitted_at))}. In attesa di conferma del titolare${T.day >= today ? ' (da domani)' : ''}. Puoi ancora modificarla.</p>` : ''}
   <div class="hgrid">${list.map(c => `<div class="hrow"><label for="h_${c.id}"><b>${esc(c.code)}</b> ${esc(c.name)}</label><input id="h_${c.id}" inputmode="decimal" autocomplete="off" placeholder="0:00" data-live="tb" data-c="${c.id}" value="${esc(T.vals[c.id] || '')}" ${locked ? 'disabled' : ''}></div>`).join('') || '<div class="empty">Nessuna commessa: il titolare le aggiunge da Anagrafiche.</div>'}</div>
   <div class="tbltot" id="tbltot">${tblTotalHtml()}</div>
@@ -337,7 +346,8 @@ function workerHours() {
   <section class="card"><h2>Le mie ore inserite</h2>
   ${S.days.length ? S.days.map(d => `<div class="hist"><div class="hh"><b>${dayName(d.day)}</b><span class="chip ${d.confirmed_at ? 'ok' : 'wait'}">${d.confirmed_at ? 'Confermato' : 'In attesa'}</span><span class="ht">${fmtM(d.entries.reduce((a, e) => a + e.minutes, 0))}</span></div>
     <div class="hl">${d.entries.map(e => `<span>${esc(e.code)} ${esc(e.name)} <b>${fmtM(e.minutes)}</b></span>`).join('')}</div></div>`).join('') : '<div class="empty">Non hai ancora inserito ore. Comincia stasera.</div>'}
-  <p class="note" style="margin-bottom:0">Qui vedi sempre quello che hai inserito e se il titolare lo ha confermato.</p></section>`;
+  <p class="note" style="margin-bottom:0">Qui vedi sempre quello che hai inserito e se il titolare lo ha confermato.</p></section>
+  ${S.abs.length ? `<section class="card"><h2>Le mie assenze</h2>${[...S.abs].sort((a, b) => a.day < b.day ? 1 : -1).map(a => `<div class="hist"><div class="hh"><b>${dayName(a.day)}</b><span class="chip ab-${a.kind}">${ABS[a.kind][0]}${a.minutes ? ' ' + fmtM(a.minutes) : ''}</span>${a.note ? `<span class="mut">${esc(a.note)}</span>` : ''}</div></div>`).join('')}</section>` : ''}`;
 }
 function pushCard() {
   if (!pushOk()) return '';
@@ -348,7 +358,7 @@ function pushCard() {
 
 /* ----- titolare ----- */
 function ownerShell() {
-  const body = { report: ownerReport, confirm: ownerConfirm, analysis: ownerAnalysis, jobs: ownerJobs, people: ownerPeople }[S.tab]();
+  const body = { report: ownerReport, confirm: ownerHours, analysis: ownerAnalysis, jobs: ownerJobs, people: ownerPeople }[S.tab]();
   const today = S.o.today || dstr(nowMs()), np = S.o.subs.filter(x => !x.confirmed_at && x.day < today).length;
   return header() + `<main class="wide">${offlineBanner()}${body}</main>` + tabbar([['report', 'Report'], ['confirm', 'Ore' + (np ? ` <i class="bdg">${np}</i>` : '')], ['analysis', 'Analisi'], ['jobs', 'Lavori'], ['people', 'Anagrafiche']]);
 }
@@ -468,6 +478,74 @@ function reportByJob(segs) {
   <div class="bb">${Object.entries(a.byW).sort((x, y) => y[1] - x[1]).map(([w, ms]) => `<div class="jr"><div class="jm"><b>${esc((W(w) || {}).name || '?')}</b></div><div class="jh"><b>${hhmm(ms)}</b>${a.byWot[w] ? `<span class="otl">str. ${hhmm(a.byWot[w])}</span>` : ''}</div></div>`).join('')}
   ${a.rescues.length ? `<div class="jx"><span class="tag r">Soccorso</span> ${esc(a.rescues.join(' · '))}</div>` : ''}
   ${a.parts.length ? `<div class="jx"><span class="lb">Ricambi</span> ${nl(a.parts.join('\n'))}</div>` : ''}${a.notes.length ? `<div class="jx"><span class="lb">Note</span> ${nl(a.notes.join('\n'))}</div>` : ''}</div></section>`).join('') || '<div class="empty">Nessun lavoro in questo periodo.</div>';
+}
+
+/* ----- calendario presenze e assenze ----- */
+const WL = ['L', 'M', 'M', 'G', 'V', 'S', 'D'];
+const dowOf = d => (new Date(d + 'T12:00').getDay() + 6) % 7 + 1;
+const closedDay = d => { const w = dowOf(d); return schedOn() && S.sched.days ? !slotsOf(S.sched.days[w]).length : w >= 6; };
+const monthDays = m => { const [y, mo] = m.split('-').map(Number), n = new Date(y, mo, 0).getDate(); return Array.from({ length: n }, (_, i) => m + '-' + pad(i + 1)); };
+const hdec = ms => (Math.round(ms / 360000) / 10).toString().replace('.', ',');
+function ownerHours() {
+  const sw = `<div class="card noprint"><div class="seggroup"><button data-act="cview" data-v="list" aria-pressed="${S.cv === 'list'}">Conferme ore</button><button data-act="cview" data-v="cal" aria-pressed="${S.cv === 'cal'}">Calendario presenze</button></div></div>`;
+  return sw + (S.cv === 'cal' ? ownerCalendar() : ownerConfirm());
+}
+function ownerCalendar() {
+  const r = S.rep, days = monthDays(r.month), today = S.o.today || dstr(nowMs()), now = nowMs();
+  const label = new Date(r.month + '-01T12:00').toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
+  const workMs = {}, subs = {}, abs = {};
+  S.o.segs.forEach(x => { if (x.kind === 'work') { const k = x.wid + '|' + dstr(x.start); workMs[k] = (workMs[k] || 0) + Math.max(0, (x.end || now) - x.start); } });
+  S.o.subs.forEach(x => { subs[subKey(x)] = x; }); S.o.abs.forEach(a => { abs[a.worker_id + '|' + a.day] = a; });
+  const ws = S.o.workers.filter(w => w.active || days.some(d => workMs[w.id + '|' + d] || abs[w.id + '|' + d])).sort(byName);
+  const cell = (w, d) => {
+    const k = w.id + '|' + d, a = abs[k], ms = workMs[k], sb = subs[k], cl = closedDay(d); let c = '', cls = cl ? 'cl' : '';
+    if (a) { c = ABS[a.kind][1] + (a.minutes ? `<small>${hdec(a.minutes * 6e4)}</small>` : ''); cls += ' ab-' + a.kind; }
+    else if (ms) { c = hdec(ms); cls += ' pr'; }
+    else if (sb) { c = hdec(subMin(sb) * 6e4); cls += ' tb'; }
+    else if (d < today && !cl) c = '·';
+    if (sb && !sb.confirmed_at && d < today) cls += ' unc';
+    if (d === today) cls += ' tdy';
+    if (S.cal && S.cal.w === w.id && S.cal.d === d) cls += ' sel';
+    return `<td class="cc ${cls}" data-act="calcell" data-w="${w.id}" data-d="${d}" role="button" tabindex="0" aria-label="${esc(w.name)} ${d}">${c}</td>`;
+  };
+  const sum = w => { let pr = 0, h = 0, f = 0, pe = 0, pm = 0, ma = 0; days.forEach(d => { const k = w.id + '|' + d, a = abs[k]; if (a) { if (a.kind === 'ferie') f++; else if (a.kind === 'malattia') ma++; else { pe++; pm += a.minutes || 0; } } if (workMs[k]) { pr++; h += workMs[k]; } }); return { pr, h, f, pe, pm, ma }; };
+  const sel = S.cal && W(S.cal.w) ? S.cal : null;
+  return `<div class="card"><div class="row" style="align-items:center"><h2 style="flex:1 1 auto;margin:0;text-transform:capitalize">${label}</h2>
+  <div class="monthnav"><button class="btn sec sm" data-act="mshift" data-v="-1" aria-label="Mese precedente">‹</button><input type="month" id="rm" data-in="rm" value="${r.month}" aria-label="Mese"><button class="btn sec sm" data-act="mshift" data-v="1" aria-label="Mese successivo">›</button></div></div>
+  <div class="legend"><span><i class="lg pr"></i>Presente (ore)</span><span><i class="lg ab-ferie"></i>Ferie</span><span><i class="lg ab-permesso"></i>Permesso</span><span><i class="lg ab-malattia"></i>Malattia</span><span><i class="lg unc"></i>Ore da confermare</span></div>
+  <p class="note" style="margin:8px 0 0">Tocca un giorno per vedere i dettagli o segnare un'assenza. Le ore sono quelle dei timer.</p></div>
+  <div class="calwrap"><table class="cal"><thead><tr><th class="nm"></th>${days.map(d => `<th class="${closedDay(d) ? 'cl' : ''} ${d === today ? 'tdy' : ''}"><span>${WL[dowOf(d) - 1]}</span>${Number(d.slice(8))}</th>`).join('')}</tr></thead>
+  <tbody>${ws.map(w => `<tr><th class="nm" scope="row">${esc(w.name)}</th>${days.map(d => cell(w, d)).join('')}</tr>`).join('') || `<tr><td class="mut" style="padding:14px">Nessun operaio inserito.</td></tr>`}</tbody></table></div>
+  ${sel ? calPanel(sel.w, sel.d, abs, workMs, subs) : ''}
+  <h2 class="rtitle" style="text-transform:none">Riepilogo del mese</h2>
+  <div class="kpis sumk">${ws.map(w => { const t = sum(w); return `<section class="box"><div class="bh"><div><h3 class="pn">${esc(w.name)}</h3><div class="meta">${t.pr} giorni con timer</div></div><div class="bt"><b>${hhmm(t.h)}</b><small>ore lavorate</small></div></div>
+    <div class="stats">${kpi('Ferie', t.f + (t.f === 1 ? ' giorno' : ' giorni'))}${kpi('Permessi', t.pe + (t.pm ? ' · ' + fmtM(t.pm) : ''))}${kpi('Malattia', t.ma + (t.ma === 1 ? ' giorno' : ' giorni'))}</div></section>`; }).join('')}</div>
+  ${absForm(ws)}
+  <p class="noprint" style="margin:14px 0 0"><button class="btn sec" data-act="csvcal">Esporta presenze CSV</button></p>`;
+}
+function calPanel(wid, d, abs, workMs, subs) {
+  const w = W(wid), a = abs[wid + '|' + d], sb = subs[wid + '|' + d], ms = workMs[wid + '|' + d] || 0, today = S.o.today || dstr(nowMs());
+  const ot = S.o.segs.filter(x => x.wid === wid && dstr(x.start) === d).reduce((t, x) => t + otMs(x, nowMs()), 0);
+  return `<section class="box" id="calpanel"><div class="bh"><div><h3 class="pn">${esc(w.name)}</h3><div class="meta" style="text-transform:capitalize">${new Date(d + 'T12:00').toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' })}</div></div><div class="bt"><button class="btn sec sm" data-act="calclose">Chiudi</button></div></div>
+  <div class="bsec" style="border-top:0"><h4>Presenza</h4><div class="cmp" style="margin:0">${ms ? `Timer <b>${hhmm(ms)}</b>${ot ? ` · straordinario <b>${hhmm(ot)}</b>` : ''}` : 'Nessun timer registrato'}</div>
+  ${sb ? `<div class="cmp">Tabella ore <b>${fmtM(subMin(sb))}</b> <span class="chip ${sb.confirmed_at ? 'ok' : 'wait'}">${sb.confirmed_at ? 'Confermata' : 'Da confermare'}</span> ${sb.confirmed_at ? `<button class="btn sec sm" data-act="reopen" data-w="${wid}" data-d="${d}">Riapri</button>` : d < today ? `<button class="btn sm" data-act="confirm1" data-w="${wid}" data-d="${d}">Conferma</button>` : ''}</div><div class="hl">${sb.entries.map(e => `<span>${esc(ccLabel(S.o.cc.find(c => c.id === e.cc)))} <b>${fmtM(e.minutes)}</b></span>`).join('')}</div>` : '<div class="cmp">Tabella ore non compilata</div>'}
+  <div class="cmp"><button class="btn sec sm" data-act="gorep" data-d="${d}">Apri nel report del giorno</button></div></div>
+  <div class="bsec"><h4>Assenza ${a ? `<span class="chip ab-${a.kind}">${ABS[a.kind][0]}${a.minutes ? ' ' + fmtM(a.minutes) : ''}</span>` : ''}</h4>
+  <div class="row"><div><label for="ab_k">Tipo</label><select id="ab_k">${a ? '' : '<option value="">Scegli…</option>'}${Object.entries(ABS).map(([k, v]) => `<option value="${k}" ${a && a.kind === k ? 'selected' : ''}>${v[0]}</option>`).join('')}</select></div>
+  <div><label for="ab_m">Ore (solo permesso)</label><input id="ab_m" inputmode="decimal" placeholder="giornata intera" value="${a && a.minutes ? fmtM(a.minutes) : ''}"></div>
+  <div style="flex:2 1 200px"><label for="ab_n">Nota</label><input id="ab_n" value="${esc(a ? a.note : '')}" autocomplete="off"></div></div>
+  <div class="btns" style="margin-top:10px"><button class="btn" data-act="saveabs" data-w="${wid}" data-d="${d}">${a ? 'Aggiorna assenza' : 'Segna assenza'}</button>${a ? `<button class="btn del" data-act="clrabs" data-w="${wid}" data-d="${d}">Rimuovi assenza</button>` : ''}</div></div></section>`;
+}
+function absForm(ws) {
+  const f = S.abf ??= { w: '', kind: 'ferie', from: '', to: '', min: '', note: '' };
+  return `<details class="box" data-k="absf"${dOpen('absf', false)} style="padding:0"><summary style="padding:14px 16px;font:700 20px var(--f-head)">Inserisci assenze per un periodo (ferie, malattia…)</summary>
+  <div style="padding:0 16px 16px"><div class="row"><div style="flex:2 1 180px"><label for="af_w">Operaio</label><select id="af_w" data-live="abf" data-f="w"><option value="">Scegli…</option>${ws.map(w => `<option value="${w.id}" ${f.w === w.id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></div>
+  <div><label for="af_k">Tipo</label><select id="af_k" data-live="abf" data-f="kind">${Object.entries(ABS).map(([k, v]) => `<option value="${k}" ${f.kind === k ? 'selected' : ''}>${v[0]}</option>`).join('')}</select></div></div>
+  <div class="row" style="margin-top:10px"><div><label for="af_f">Dal</label><input id="af_f" type="date" data-live="abf" data-f="from" value="${f.from}"></div><div><label for="af_t">Al</label><input id="af_t" type="date" data-live="abf" data-f="to" value="${f.to}"></div>
+  <div><label for="af_m">Ore al giorno (permesso)</label><input id="af_m" inputmode="decimal" data-live="abf" data-f="min" placeholder="giornata intera" value="${esc(f.min)}"></div></div>
+  <div style="margin-top:10px"><label for="af_n">Nota</label><input id="af_n" data-live="abf" data-f="note" value="${esc(f.note)}" autocomplete="off"></div>
+  <p class="note">Nei periodi vengono saltati i giorni di chiusura dell'officina (sabato e domenica, o i giorni senza orario). Per un solo giorno usa il calendario.</p>
+  <div class="btns"><button class="btn" data-act="saveabsrange">Inserisci assenze</button><button class="btn del" data-act="clrabsrange">${S.confirm === 'absclr' ? 'Conferma rimozione' : 'Rimuovi assenze del periodo'}</button></div></div></details>`;
 }
 /* ----- conferme ore per commessa ----- */
 const subKey = x => x.worker_id + '|' + x.day;
@@ -637,13 +715,14 @@ const act = {
   logout() { logout(); },
   tab(b) { S.tab = b.dataset.t; S.confirm = ''; render(); if (S.role === 'owner' && ['analysis', 'confirm', 'report'].includes(S.tab)) refresh(); },
   /* timer */
-  pick(b) { S.sel = S.sel === b.dataset.id ? '' : b.dataset.id; render(); },
+  pick(b) { S.sel = S.sel === b.dataset.id ? '' : b.dataset.id; S.typeSel = ''; render(); if (S.sel) requestAnimationFrame(() => { const e = document.querySelector('.startbox'); if (e) e.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }); },
   start() { if (!S.sel || S.segs.some(s => !s.end)) return; const jid = S.sel; S.sel = ''; S.jq = ''; const jb = J(jid), ty = jb && jb.type !== 'gen' ? S.typeSel || null : null; S.typeSel = ''; act2('w_start', { p_kind: 'work', p_job: jid, p_overtime: schedOn() && !inHours(nowMs()), p_type: ty }); },
   async startot(b) {
     const last = [...S.segs].reverse().find(x => x.jobId === b.dataset.job && x.wt), ok = await act2('w_start', { p_kind: 'work', p_job: b.dataset.job, p_overtime: true, p_type: last ? last.wt : null });
     if (ok) { S.alerts = S.alerts.filter(a => a.id !== b.dataset.id); render(); call('w_ack_alert', { p_id: b.dataset.id }).catch(() => {}); }
   },
   gohours(b) { S.tab = 'hours'; S.tbl = null; if (b.dataset.id) { S.alerts = S.alerts.filter(a => a.id !== b.dataset.id); call('w_ack_alert', { p_id: b.dataset.id }).catch(() => {}); } render(); },
+  dayshift(b) { const T = tblGet(), d = dstr(Date.parse(T.day + 'T12:00') + Number(b.dataset.v) * 864e5), today = S.today || dstr(nowMs()); if (d > today) return; S.tbl = { day: d, init: '', vals: {} }; render(); },
   goday(b) { S.tbl = { day: b.dataset.d, init: '', vals: {} }; render(); },
   async saveday() {
     const T = tblGet(), items = []; let tot = 0;
@@ -680,6 +759,39 @@ const act = {
     const s = get(S.segs, b.dataset.s); if (!s) return; const v = b.dataset.v, on = !s.rescues.includes(v);
     s.rescues = on ? [...s.rescues, v] : s.rescues.filter(x => x !== v); render();
     act2('w_set_rescue', { p_seg: s.id, p_vehicle: v, p_on: on });
+  },
+  /* calendario */
+  cview(b) { S.cv = b.dataset.v; S.cal = null; render(); },
+  mshift(b) { const [y, m] = S.rep.month.split('-').map(Number), d = new Date(y, m - 1 + Number(b.dataset.v), 1); S.rep.month = d.getFullYear() + '-' + pad(d.getMonth() + 1); S.cal = null; render(); refresh(); },
+  calcell(b) { const same = S.cal && S.cal.w === b.dataset.w && S.cal.d === b.dataset.d; S.cal = same ? null : { w: b.dataset.w, d: b.dataset.d }; render(); if (S.cal) requestAnimationFrame(() => { const e = $('#calpanel'); if (e) e.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }); },
+  calclose() { S.cal = null; render(); },
+  gorep(b) { S.rep.mode = 'day'; S.rep.by = 'person'; S.rep.date = b.dataset.d; S.tab = 'report'; render(); refresh(); },
+  saveabs(b) {
+    const k = $('#ab_k').value; if (!k) { toast('Scegli il tipo di assenza'); return; }
+    const m = parseH($('#ab_m').value); if (Number.isNaN(m)) { toast('Ore non valide: scrivi per esempio 2:30 oppure 2,5'); return; }
+    act2('o_set_absence', { p_worker: b.dataset.w, p_from: b.dataset.d, p_to: b.dataset.d, p_kind: k, p_minutes: k === 'permesso' && m > 0 ? m : null, p_note: $('#ab_n').value }).then(ok => { if (ok) toast('Assenza salvata'); });
+  },
+  clrabs(b) { act2('o_clear_absence', { p_worker: b.dataset.w, p_from: b.dataset.d, p_to: b.dataset.d }).then(ok => { if (ok) toast('Assenza rimossa'); }); },
+  async saveabsrange() {
+    const f = S.abf; if (!f || !f.w || !f.from || !f.to) { toast('Scegli operaio, data di inizio e di fine'); return; }
+    const m = parseH(f.min); if (Number.isNaN(m)) { toast('Ore non valide'); return; }
+    try { const n = await call('o_set_absence', { p_worker: f.w, p_from: f.from, p_to: f.to, p_kind: f.kind, p_minutes: f.kind === 'permesso' && m > 0 ? m : null, p_note: f.note }); toast(n + (n === 1 ? ' giorno registrato' : ' giorni registrati')); await refresh(); }
+    catch (e) { if (!e.expired) toast(e.message); }
+  },
+  async clrabsrange() {
+    const f = S.abf; if (!f || !f.w || !f.from || !f.to) { toast('Scegli operaio, data di inizio e di fine'); return; }
+    if (S.confirm !== 'absclr') { S.confirm = 'absclr'; render(); return; } S.confirm = '';
+    try { const n = await call('o_clear_absence', { p_worker: f.w, p_from: f.from, p_to: f.to }); toast(n + (n === 1 ? ' assenza rimossa' : ' assenze rimosse')); await refresh(); }
+    catch (e) { if (!e.expired) toast(e.message); }
+  },
+  csvcal() {
+    const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"', days = monthDays(S.rep.month), now = nowMs(), wm = {};
+    S.o.segs.forEach(x => { if (x.kind === 'work') { const k = x.wid + '|' + dstr(x.start); wm[k] = (wm[k] || 0) + Math.max(0, (x.end || now) - x.start); } });
+    const ab = {}; S.o.abs.forEach(a => { ab[a.worker_id + '|' + a.day] = a; });
+    const rows = [['Operaio', ...days.map(d => d.slice(8) + '/' + d.slice(5, 7))]];
+    [...S.o.workers].sort(byName).forEach(w => rows.push([w.name, ...days.map(d => { const a = ab[w.id + '|' + d]; return a ? ABS[a.kind][0] + (a.minutes ? ' ' + fmtM(a.minutes) : '') : wm[w.id + '|' + d] ? hdec(wm[w.id + '|' + d]) : ''; })]));
+    const blob = new Blob(['﻿' + rows.map(r => r.map(q).join(';')).join('\n')], { type: 'text/csv;charset=utf-8' });
+    const el = document.createElement('a'); el.href = URL.createObjectURL(blob); el.download = 'presenze-' + S.rep.month + '.csv'; document.body.append(el); el.click(); el.remove();
   },
   /* ore per commessa (titolare) */
   an(b) { S.an = b.dataset.v; render(); refresh(); },
@@ -736,7 +848,7 @@ const act = {
     Sc().scan((code, err) => {
       if (err) { toast(err); return; }
       const j = Sc().matchJob(S.jobs.filter(x => x.open), code);
-      if (j) { S.sel = j.id; S.jq = ''; render(); } else toast('Nessun lavoro aperto con il codice ' + code);
+      if (j) { S.sel = j.id; S.typeSel = ''; S.jq = ''; render(); } else toast('Nessun lavoro aperto con il codice ' + code);
     });
   },
   scanbc() {
@@ -862,7 +974,7 @@ const chg = {
     if (!t.checked && s.rescues.length) { const old = s.rescues; s.rescues = []; render(); Promise.all(old.map(v => call('w_set_rescue', { p_seg: s.id, p_vehicle: v, p_on: false }))).then(refresh).catch(e => toast(e.message)); }
     else render();
   },
-  tday(t) { S.tbl = { day: t.value, init: '', vals: {} }; render(); },
+  tday(t) { const today = S.today || dstr(nowMs()), min = dstr(Date.parse(today + 'T12:00') - 45 * 864e5); let v = t.value; if (!v) return; if (v > today) v = today; if (v < min) v = min; S.tbl = { day: v, init: '', vals: {} }; render(); },
   wt(t) { S.typeSel = t.value; render(); },
   wtype(t) { const s = get(S.segs, t.dataset.s); if (s) s.wt = t.value; act2('w_set_type', { p_seg: t.dataset.s, p_type: t.value || null }); },
   otype(t) { act2('o_set_segment_type', { p_seg: t.dataset.s, p_type: t.value || null }); },
@@ -887,6 +999,7 @@ const live = {
     else if ((m = /^(af|at|bf|bt)(\d)$/.exec(f))) d.days[m[2]][m[1]] = t.value;
   },
   dr(t) { S.draft[t.dataset.f] = t.value; },
+  abf(t) { (S.abf ??= { w: '', kind: 'ferie', from: '', to: '', min: '', note: '' })[t.dataset.f] = t.value; if (S.confirm === 'absclr') S.confirm = ''; },
   tb(t) { tblGet().vals[t.dataset.c] = t.value; const e = $('#tbltot'); if (e) e.innerHTML = tblTotalHtml(); },
   jq(t) { S.jq = t.value; const l = $('#joblist'); if (l) l.innerHTML = jobListHtml(); },
   jf(t) { S.jf = t.value; const l = $('#jobsadmin'); if (l) l.innerHTML = jobsAdminList(); }
